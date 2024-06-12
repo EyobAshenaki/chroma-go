@@ -1,136 +1,185 @@
 package sync
 
 import (
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"os"
+	"net/url"
+	"strconv"
 	"time"
-)
 
-// var token string
-// var mmAPI string
-const token = "Bearer yokb6gwehpfhmn64f9k63r4xiw"
-const mmAPI = "http://localhost:8065/api/v4"
+	"github.com/EyobAshenaki/chroma-go/db"
+)
 
 type ChannelProp string
 
+type Post struct {
+	Id        string `json:"id"`
+	Message   string `json:"message"`
+	UserId    string `json:"user_id"`
+	Type      string `json:"type"`
+	UpdateAt  int64  `json:"update_at"`
+	DeleteAt  int64  `json:"delete_at"`
+	ChannelId string `json:"channel_id"`
+}
+
 type PostResponse struct {
-	Order          []string
-	Posts          map[string]interface{}
-	PreviousPostId string
+	Order          []string        `json:"order"`
+	Posts          map[string]Post `json:"posts"`
+	PreviousPostId string          `json:"prev_post_id"`
+}
+
+type Channel struct {
+	Id            string `json:"id"`
+	Type          string `json:"type"`
+	DisplayName   string `json:"display_name"`
+	TotalMsgCount int    `json:"total_msg_count"`
+	// LastFetchedUpdate int64  `json:"last_fetched_update"`
+}
+
+const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
+const mmAPI = "http://localhost:8065/api/v4"
+
+var store *db.DataStore
+
+func Init() {
+	store = db.GetDataStore("mattermost")
+
+	// set fetch_interval
+	err := store.Put("sync", "fetch_interval", []byte("3600"))
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// set last_fetched_at
+	err = setLastFetchedAt(time.Now())
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// set is_fetch_in_progress
+	err = setIsFetchInProgress(false)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	err = setIsSyncInProgress(false)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// // set chroma_returned_results
+	// err = store.Put("chroma", "chroma_returned_results", []byte("10"))
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
+
+	// // set max_chroma_distance
+	// err = store.Put("chroma", "max_chroma_distance", []byte("10"))
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
+
+	// set total_fetched_posts
+	setTotalFetchedPosts(0)
+}
+
+func Close() {
+	store.Close()
 }
 
 func Start() error {
 	fmt.Println("Start syncing...")
-	// token = "Bearer yokb6gwehpfhmn64f9k63r4xiw"
-	// mmAPI = "http://localhost:8065/api/v4"
 
-	isSyncInProgress := false
+	// if fetching is in progress return nothing
+	if isFetchInProgress, err := getIsFetchInProgress(); isFetchInProgress {
+		if err != nil {
+			return err
+		}
 
-	// if syncing is in progress return nothing
-	if isSyncInProgress {
 		return nil
 	}
 
-	// set syncing to true so no other sync can start
-	isSyncInProgress = true
-
-	//save the time where syncing started
-	startSyncTime := time.Now()
-
 	// get last synced time from db
-	lastSyncedTimeInMilliseconds := getLastSyncedTime().UnixMilli()
+	lastFetchedAt, err := getLastFetchedAt()
+	if err != nil {
+		return err
+	}
+	lastFetchedAtInMilliseconds := lastFetchedAt.UnixMilli()
 
 	// get total fetched posts from db
-	totalFetchedPosts := getTotalFetchedPosts()
-
-	// declare a dict to store request parameters
-	var params map[string]interface{}
-
-	// Assign the since property in the request param dict to get all posts since that time.
-	// if the since property is not defined all posts will be fetched from MM db
-	if lastSyncedTimeInMilliseconds != 0 && totalFetchedPosts != 0 {
-		params["since"] = lastSyncedTimeInMilliseconds
-	}
-
-	// TODO: remove this afa
-	channelProps := []string{"id", "type", "display_name", "total_msg_count"}
-
-	// Get all channels' data
-	channels, err := getAllChannels(channelProps...)
-
+	totalFetchedPosts, err := getTotalFetchedPosts()
 	if err != nil {
 		return err
 	}
 
-	// Calculate the total posts
-	totalPosts := 0
-
-	for _, channel := range channels {
-		totalPosts += channel["total_msg_count"].(int)
+	// set fetching to true so no other sync can start
+	fetchErr := setIsFetchInProgress(true)
+	if fetchErr != nil {
+		return fetchErr
 	}
+
+	//save the time where syncing started
+	startSyncTime := time.Now()
+
+	// declare a dict to store request parameters
+	// var params map[string]interface{}
+	postParams := url.Values{
+		"since":    {""},
+		"per_page": {"200"},
+		"page":     {"0"},
+	}
+
+	// Assign the since property in the request param to get all posts since that time.
+	// if the since property is not defined all posts will be fetched from MM db
+	if lastFetchedAtInMilliseconds != 0 && totalFetchedPosts != 0 {
+		postParams.Set("since", fmt.Sprintf("%d", lastFetchedAtInMilliseconds))
+	} else {
+		err := setIsSyncInProgress(true)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Get all channels' data
+	channels, err := GetAllChannels()
+	if err != nil {
+		return err
+	}
+
+	totalPosts := calcTotalPosts(channels)
 
 	// Get the total number of posts since last sync
 	totalPostsSinceLastSync := totalPosts - totalFetchedPosts
 
-	var posts []map[string]interface{}
+	var posts []Post
 	loadedPosts := 0
 	var syncPercentage float64
 
 	for _, channel := range channels {
 		// 200 is the max number of posts per page
-
-		// reset page to 0 for each channel
-		params["per_page"] = 10
-		params["page"] = 0
-
-		// Used to check if there are any more pages of posts to fetch
-		previousPostId := "~"
+		postParams.Set("per_page", "10")
+		postParams.Set("page", "0")
 
 		// loop through all pages in a channel
 		for {
 			// Fetch posts for the current page
-			postsRes, err := fetchPostsForPage(channel["id"].(string), params)
+			postsRes, err := FetchPostsForPage(channel.Id, postParams)
 			if err != nil {
 				return err
 			}
 
-			// Get the ids for all posts in the 'order' field and filter out each post_detail_fields we want for each post
-			/*
-				This is the schema for the response:
-						{
-								"order": [ ...list of post_ids... ],
-								"posts": {
-										...."post_id_1": { ...1st post details... },
-												"post_id_2": { ...2nd post details... }...  }
-						}
-			*/
-
-			// filteredPostFields := []string{"id", "message", "user_id", "type", "update_at", "delete_at", "channel_id"}
-
-			// Loop through all posts in a page
+			// add posts while keeping order
 			for _, postId := range postsRes.Order {
-				var post map[string]interface{}
-
-				// filter out the fields we want for each post
-				post["id"] = postsRes.Posts[postId].(map[string]interface{})["id"]
-				post["message"] = postsRes.Posts[postId].(map[string]interface{})["message"]
-				post["user_id"] = postsRes.Posts[postId].(map[string]interface{})["user_id"]
-				post["type"] = postsRes.Posts[postId].(map[string]interface{})["type"]
-				post["update_at"] = postsRes.Posts[postId].(map[string]interface{})["update_at"]
-				post["delete_at"] = postsRes.Posts[postId].(map[string]interface{})["delete_at"]
-
-				// add the filtered post to the list of posts
-				posts = append(posts, post)
+				posts = append(posts, postsRes.Posts[postId])
 			}
 
 			// Increment the number of fetched posts
-			loadedPosts += len(posts)
+			loadedPosts = len(posts)
 
 			// get the channel's access restriction (private/ public)
 			access := ""
-			switch channel["type"].(string) {
+			switch channel.Type {
 			case "O":
 				// public channel
 				access = "pub"
@@ -140,7 +189,7 @@ func Start() error {
 			}
 
 			// remove deleted posts from chroma and filter out any irrelevant posts
-			filteredPosts, err := deleteAndFilterPost(posts, access)
+			filteredPosts, err := deleteAndFilterPost(posts)
 			if err != nil {
 				return err
 			}
@@ -150,150 +199,252 @@ func Start() error {
 				return err
 			}
 
-			// Update the previous post id
-			previousPostId = postsRes.PreviousPostId
+			// Set the total fetched posts in db
+			setTotalFetchedPosts(loadedPosts)
+
+			// if the previous post id is empty, we have reached the end of the posts for this channel
+			if postsRes.PreviousPostId == "" {
+				break
+			}
 
 			// Increment the page number
-			params["page"] = params["page"].(int) + 1
+			page := postParams.Get("page")
+			nxtPage, err := strconv.Atoi(page)
+			if err != nil {
+				fmt.Println("Error converting string to int:", err)
+				return err
+			}
+			nxtPage += 1
+
+			postParams.Set("page", strconv.Itoa(nxtPage))
 
 			// Calculate sync percentage
-			if totalFetchedPosts != 0 {
+			if totalPostsSinceLastSync != 0 {
 				syncPercentage = (float64(loadedPosts) / float64(totalPostsSinceLastSync)) * 100
 			}
 			// Print sync progress
 			fmt.Printf("Syncing posts... %.2f%% complete\n", syncPercentage)
-
-			// Check if there are any more pages of posts
-			// if previousPostId == posts[len(posts)-1]["id"] {
-			// 	break
-			// }
-			if previousPostId == "" {
-				break
-			}
+			time.Sleep(1 * time.Second)
 		}
 	}
 
-	// Set to 100 manually to indicate completion
-	syncPercentage = 100
+	syncPercentage = (float64(loadedPosts) / float64(totalPostsSinceLastSync)) * 100
 
 	fmt.Println("Total posts:", totalPostsSinceLastSync)
 	fmt.Println("Total posts fetched:", totalFetchedPosts)
 
-	// Update the last synced time in db
-	updateLastSyncedTime(startSyncTime)
-
-	// Update the total fetched posts in db
-	updateTotalFetchedPosts(totalPosts)
+	// Set the last synced time in db
+	setLastFetchedAt(startSyncTime)
 
 	// Print sync completion message
+	fmt.Printf("Fetching posts... %.2f%% complete\n", syncPercentage)
 
 	// Set syncing to false
-	isSyncInProgress = false
+	fetchErr = setIsFetchInProgress(false)
+	if fetchErr != nil {
+		return fetchErr
+	}
 
-	// Calculate the total time taken for syncing
-
-	// -----------------------------------------------------------
-
-	// make a request to fetch new posts
-	// response, err := makeRequest("GET", "https://example.com/api/posts", params)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// if response.StatusCode != 200 {
-	// 	return fmt.Errorf("Failed to fetch new posts. Status code: %d", response.StatusCode)
-	// }
-
-	// // parse the response body
-	// var posts []map[string]interface{}
-	// err = json.Unmarshal(response.Body, &posts)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// // save the fetched posts to db
-	// for _, post := range posts {
-	// 	// do something
-	// }
-
-	// // update the last synced time in db
-	// // do something
 	return nil
 }
 
-func updateTotalFetchedPosts(totalPosts int) (err error) {
-	// TODO: implement this
+// ----------------------------- Is Sync In Progress --------------------
+func setIsSyncInProgress(truthVal bool) error {
+	err := store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(truthVal)))
+	if err != nil {
+		return err
+	}
 
-	// do something
 	return nil
 }
 
-func updateLastSyncedTime(startSyncTime time.Time) (err error) {
-	// TODO: implement this
+func getIsSyncInProgress() (bool, error) {
+	b, err := store.Get("sync", "is_sync_in_progress")
+	if err != nil {
+		return false, nil
+	}
 
-	// do something
+	return strconv.ParseBool(string(b))
+}
+
+// ----------------------------- Is Fetch In Progress --------------------
+func setIsFetchInProgress(truthVal bool) error {
+	err := store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(truthVal)))
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func getLastSyncedTime() time.Time {
-	// TODO: implement this
+func getIsFetchInProgress() (bool, error) {
+	b, err := store.Get("sync", "is_fetch_in_progress")
+	if err != nil {
+		return false, nil
+	}
 
-	// do something
-	return time.Now()
+	return strconv.ParseBool(string(b))
 }
 
-func getTotalFetchedPosts() int {
-	// TODO: implement this
-
-	// do something
-	return 0
+// *** DONE *** //
+func calcTotalPosts(channels []Channel) int {
+	total := 0
+	for _, channel := range channels {
+		total += channel.TotalMsgCount
+	}
+	return total
 }
 
-func getAllChannels(props ...string) (channels []map[string]interface{}, err error) {
-	fmt.Println("Getting all channels...", props)
-
-	req, err := http.NewRequest(http.MethodGet, mmAPI, nil)
+// *** DONE *** //
+func setTotalFetchedPosts(totalPosts int) error {
+	err := store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(totalPosts)))
 	if err != nil {
-		fmt.Printf("client: could not create request: %s\n", err)
-		return nil, err
+		return err
+	}
+	return nil
+}
+
+// *** DONE *** //
+func setLastFetchedAt(startSyncTime time.Time) error {
+	err := store.Put("sync", "last_fetched_at", []byte(strconv.FormatInt(startSyncTime.UnixMilli(), 10)))
+	if err != nil {
+		return err
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	return nil
+}
+
+// *** DONE *** //
+func getLastFetchedAt() (time.Time, error) {
+	b, err := store.Get("sync", "last_fetched_at")
 	if err != nil {
-		fmt.Printf("client: error making http request: %s\n", err)
-		return nil, err
+		return time.Time{}, err
 	}
 
-	fmt.Printf("client: got response!\n")
-	fmt.Printf("client: status code: %d\n", res.StatusCode)
-
-	resBody, err := ioutil.ReadAll(res.Body)
+	lastFetchedAt, err := strconv.ParseInt(string(b), 10, 64)
 	if err != nil {
-		fmt.Printf("client: could not read response body: %s\n", err)
-		os.Exit(1)
+		fmt.Println("error while parsing int: ", err)
+		return time.Time{}, err
 	}
-	fmt.Printf("client: response body: %s\n", resBody)
+
+	return time.UnixMilli(lastFetchedAt), nil
+}
+
+// *** DONE *** //
+func getTotalFetchedPosts() (int, error) {
+	b, err := store.Get("sync", "total_fetched_posts")
+	if err != nil {
+		return 0, err
+	}
+
+	return strconv.Atoi(string(b))
+}
+
+// *** DONE *** //
+func GetAllChannels() (channels []Channel, err error) {
+	reqUrl := mmAPI + "/channels"
+
+	fmt.Println("Request URL:", reqUrl)
+
+	req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
+	if err != nil {
+		return nil, fmt.Errorf("client: could not create request: %s\n", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", token)
+
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("client: error making http request: %s\n", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != 200 {
+		return nil, fmt.Errorf("client: Failed to fetch new posts. Status code: %d", response.StatusCode)
+	}
+
+	// automatically filters the response body to only include the fields
+	// specified in Channels struct by json tags
+	err = json.NewDecoder(response.Body).Decode(&channels)
+	if err != nil {
+		return nil, fmt.Errorf("client: could not decode json: %s\n", err)
+
+	}
+
+	return channels, nil
+}
+
+// *** DONE *** //
+func FetchPostsForPage(channelId string, params url.Values) (postRes PostResponse, err error) {
+	reqUrl := mmAPI + "/channels/" + channelId + "/posts"
+
+	req, err := http.NewRequest("GET", reqUrl, nil)
+	if err != nil {
+		return PostResponse{}, fmt.Errorf("client: could not create request: %s\n", err)
+	}
+
+	req.URL.RawQuery = params.Encode()
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", token)
+
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	response, err := client.Do(req)
+	if err != nil {
+		return PostResponse{}, fmt.Errorf("client: error making http request: %s\n", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != 200 {
+		return PostResponse{}, fmt.Errorf("client: Failed to fetch new posts. Status code: %d", response.StatusCode)
+	}
+
+	err = json.NewDecoder(response.Body).Decode(&postRes)
+	if err != nil {
+		return PostResponse{}, fmt.Errorf("client: could not decode json: %s\n", err)
+	}
+
+	return postRes, nil
+}
+
+func deleteAndFilterPost(posts []Post) (filteredPosts []Post, err error) {
+	// TODO: filter out any stickers / emojis
+	// TODO: replace user handles with their real names
+
+	for _, post := range posts {
+		// TODO: delete posts from chroma if it's been deleted from mattermost
+		// delete any posts that have been deleted
+		if post.DeleteAt > 0 {
+			deleteFromChroma("collection_name", post.Id)
+		}
+
+		// TODO: filter posts that are not of type text and empty messages
+		// filter out any irrelevant posts
+		if post.Type == "" && post.Message != "" {
+			filteredPosts = append(filteredPosts, post)
+		}
+	}
 
 	return nil, nil
 }
 
-func fetchPostsForPage(s string, params map[string]interface{}) (posts PostResponse, err error) {
+func deleteFromChroma(collectionName, postId string) {
 	// TODO: implement this
 
-	// do something
-	return PostResponse{}, nil
+	fmt.Println("Deleting post from chroma...", collectionName, postId)
 }
 
-func deleteAndFilterPost(post []map[string]interface{}, access string) (filteredPosts map[string]interface{}, err error) {
+func upsertPostsToChroma(filteredPosts []Post, access string) (err error) {
 	// TODO: implement this
 
-	// do something
-	return nil, nil
-}
+	fmt.Println("Upserting posts to chroma...", filteredPosts, access)
 
-func upsertPostsToChroma(filteredPosts map[string]interface{}, access string) (err error) {
-	// TODO: implement this
-
-	// do something
 	return nil
 }
