@@ -11,7 +11,7 @@ import (
 	"github.com/EyobAshenaki/chroma-go/db"
 )
 
-const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
+const token = "Bearer yokb6gwehpfhmn64f9k63r4xiw"
 const mmAPI = "http://localhost:8065/api/v4"
 
 type Post struct {
@@ -60,19 +60,25 @@ func (sync *Sync) InitializeStore() {
 	}
 
 	// set is_fetch_in_progress
-	err = sync.Store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(false)))
+	err = store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(false)))
 	if err != nil {
 		fmt.Println(err)
 	}
 
 	// set is_sync_in_progress
-	err = sync.Store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(false)))
+	err = store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(false)))
 	if err != nil {
 		fmt.Println(err)
 	}
 
 	// set total_fetched_posts
-	err = sync.Store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(0)))
+	err = store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(0)))
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// set last_fetched_at
+	err = store.Put("sync", "last_fetched_at", []byte(strconv.Itoa(0)))
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -92,7 +98,7 @@ func (sync *Sync) InitializeStore() {
 	sync.Store = store
 }
 
-func (sync *Sync) Stop() error {
+func (sync *Sync) StopSync() error {
 	if sync.Ticker == nil {
 		return fmt.Errorf("sync is not running")
 	}
@@ -100,27 +106,11 @@ func (sync *Sync) Stop() error {
 	return nil
 }
 
-// done := make(chan bool)
-
-// go func() {
-// 	for {
-// 		select {
-// 		case <-done:
-// 			fmt.Println("Done")
-
-// 			return
-// 		case t := <-ticker.C:
-// 			startSync()
-// 			fmt.Println("Current time: ", t)
-// 		}
-// 	}
-// }()
-
-func (sync *Sync) Close() {
+func (sync *Sync) CloseStore() {
 	sync.Store.Close()
 }
 
-func (sync *Sync) Start() error {
+func (sync *Sync) StartFetch() error {
 	fmt.Println("Start syncing...")
 
 	// if fetching is in progress return nothing
@@ -129,7 +119,7 @@ func (sync *Sync) Start() error {
 			return err
 		}
 
-		return nil
+		return fmt.Errorf("fetch is in progress")
 	}
 
 	// get last synced time from db
