@@ -11,7 +11,8 @@ import (
 	"github.com/EyobAshenaki/chroma-go/db"
 )
 
-type ChannelProp string
+const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
+const mmAPI = "http://localhost:8065/api/v4"
 
 type Post struct {
 	Id        string `json:"id"`
@@ -37,33 +38,41 @@ type Channel struct {
 	// LastFetchedUpdate int64  `json:"last_fetched_update"`
 }
 
-const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
-const mmAPI = "http://localhost:8065/api/v4"
+type Sync struct {
+	Ticker *time.Ticker
+	Store  *db.DataStore
+}
 
-var store *db.DataStore
+func New() *Sync {
+	return &Sync{
+		Store:  &db.DataStore{},
+		Ticker: &time.Ticker{},
+	}
+}
 
-func Init() {
-	store = db.GetDataStore("mattermost")
+func (sync *Sync) InitializeStore() {
+	store := db.GetDataStore("mm-sync")
 
 	// set fetch_interval
-	err := store.Put("sync", "fetch_interval", []byte("3600"))
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	// set last_fetched_at
-	err = setLastFetchedAt(time.Now())
+	err := store.Put("sync", "fetch_interval", []byte("6"))
 	if err != nil {
 		fmt.Println(err)
 	}
 
 	// set is_fetch_in_progress
-	err = setIsFetchInProgress(false)
+	err = sync.Store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(false)))
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	err = setIsSyncInProgress(false)
+	// set is_sync_in_progress
+	err = sync.Store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(false)))
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// set total_fetched_posts
+	err = sync.Store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(0)))
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -80,19 +89,42 @@ func Init() {
 	// 	fmt.Println(err)
 	// }
 
-	// set total_fetched_posts
-	setTotalFetchedPosts(0)
+	sync.Store = store
 }
 
-func Close() {
-	store.Close()
+func (sync *Sync) Stop() error {
+	if sync.Ticker == nil {
+		return fmt.Errorf("sync is not running")
+	}
+	sync.Ticker.Stop()
+	return nil
 }
 
-func Start() error {
+// done := make(chan bool)
+
+// go func() {
+// 	for {
+// 		select {
+// 		case <-done:
+// 			fmt.Println("Done")
+
+// 			return
+// 		case t := <-ticker.C:
+// 			startSync()
+// 			fmt.Println("Current time: ", t)
+// 		}
+// 	}
+// }()
+
+func (sync *Sync) Close() {
+	sync.Store.Close()
+}
+
+func (sync *Sync) Start() error {
 	fmt.Println("Start syncing...")
 
 	// if fetching is in progress return nothing
-	if isFetchInProgress, err := getIsFetchInProgress(); isFetchInProgress {
+	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress {
 		if err != nil {
 			return err
 		}
@@ -101,20 +133,20 @@ func Start() error {
 	}
 
 	// get last synced time from db
-	lastFetchedAt, err := getLastFetchedAt()
+	lastFetchedAt, err := sync.getLastFetchedAt()
 	if err != nil {
 		return err
 	}
 	lastFetchedAtInMilliseconds := lastFetchedAt.UnixMilli()
 
 	// get total fetched posts from db
-	totalFetchedPosts, err := getTotalFetchedPosts()
+	totalFetchedPosts, err := sync.getTotalFetchedPosts()
 	if err != nil {
 		return err
 	}
 
 	// set fetching to true so no other sync can start
-	fetchErr := setIsFetchInProgress(true)
+	fetchErr := sync.setIsFetchInProgress(true)
 	if fetchErr != nil {
 		return fetchErr
 	}
@@ -135,7 +167,7 @@ func Start() error {
 	if lastFetchedAtInMilliseconds != 0 && totalFetchedPosts != 0 {
 		postParams.Set("since", fmt.Sprintf("%d", lastFetchedAtInMilliseconds))
 	} else {
-		err := setIsSyncInProgress(true)
+		err := sync.setIsSyncInProgress(true)
 		if err != nil {
 			return err
 		}
@@ -200,7 +232,7 @@ func Start() error {
 			}
 
 			// Set the total fetched posts in db
-			setTotalFetchedPosts(loadedPosts)
+			sync.setTotalFetchedPosts(loadedPosts)
 
 			// if the previous post id is empty, we have reached the end of the posts for this channel
 			if postsRes.PreviousPostId == "" {
@@ -234,13 +266,13 @@ func Start() error {
 	fmt.Println("Total posts fetched:", totalFetchedPosts)
 
 	// Set the last synced time in db
-	setLastFetchedAt(startSyncTime)
+	sync.setLastFetchedAt(startSyncTime)
 
 	// Print sync completion message
 	fmt.Printf("Fetching posts... %.2f%% complete\n", syncPercentage)
 
 	// Set syncing to false
-	fetchErr = setIsFetchInProgress(false)
+	fetchErr = sync.setIsFetchInProgress(false)
 	if fetchErr != nil {
 		return fetchErr
 	}
@@ -248,18 +280,62 @@ func Start() error {
 	return nil
 }
 
-// ----------------------------- Is Sync In Progress --------------------
-func setIsSyncInProgress(truthVal bool) error {
-	err := store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(truthVal)))
-	if err != nil {
-		return err
+func (sync *Sync) updateFetchInterval(newInterval time.Duration) error {
+	if sync.Ticker == nil {
+		return fmt.Errorf("sync is not running")
 	}
 
-	return nil
+	if newInterval <= 0 {
+		sync.Ticker.Stop()
+		return fmt.Errorf("fetch interval much me greater than 0")
+	}
+
+	// reset stops a ticker and resets its period to the specified
+	// duration. The next tick will arrive after the new period elapses.
+	sync.Ticker.Reset(newInterval)
+
+	return sync.setFetchInterval(newInterval)
 }
 
-func getIsSyncInProgress() (bool, error) {
-	b, err := store.Get("sync", "is_sync_in_progress")
+// ----------------------------- Is Sync In Progress --------------------
+func (sync *Sync) setFetchInterval(interval time.Duration) error {
+	if sync.Store == nil {
+		return fmt.Errorf("store is not initialized")
+	}
+
+	return sync.Store.Put("sync", "fetch_interval", []byte(strconv.Itoa(int(interval.Hours()))))
+}
+
+func (sync *Sync) getFetchInterval() (int, error) {
+	if sync.Store == nil {
+		return 0, fmt.Errorf("store is not initialized")
+	}
+
+	b, err := sync.Store.Get("sync", "fetch_interval")
+
+	if err != nil {
+		return 0, nil
+	}
+
+	return strconv.Atoi(string(b))
+}
+
+// ----------------------------- Is Sync In Progress --------------------
+func (sync *Sync) setIsSyncInProgress(truthVal bool) error {
+	if sync.Store == nil {
+		return fmt.Errorf("store is not initialized")
+	}
+
+	return sync.Store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(truthVal)))
+}
+
+func (sync *Sync) getIsSyncInProgress() (bool, error) {
+	if sync.Store == nil {
+		return false, fmt.Errorf("store is not initialized")
+	}
+
+	b, err := sync.Store.Get("sync", "is_sync_in_progress")
+
 	if err != nil {
 		return false, nil
 	}
@@ -268,17 +344,21 @@ func getIsSyncInProgress() (bool, error) {
 }
 
 // ----------------------------- Is Fetch In Progress --------------------
-func setIsFetchInProgress(truthVal bool) error {
-	err := store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(truthVal)))
-	if err != nil {
-		return err
+func (sync *Sync) setIsFetchInProgress(truthVal bool) error {
+	if sync.Store == nil {
+		return fmt.Errorf("store is not initialized")
 	}
 
-	return nil
+	return sync.Store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(truthVal)))
 }
 
-func getIsFetchInProgress() (bool, error) {
-	b, err := store.Get("sync", "is_fetch_in_progress")
+func (sync *Sync) getIsFetchInProgress() (bool, error) {
+	if sync.Store == nil {
+		return false, fmt.Errorf("store is not initialized")
+	}
+
+	b, err := sync.Store.Get("sync", "is_fetch_in_progress")
+
 	if err != nil {
 		return false, nil
 	}
@@ -286,42 +366,52 @@ func getIsFetchInProgress() (bool, error) {
 	return strconv.ParseBool(string(b))
 }
 
-// *** DONE *** //
-func calcTotalPosts(channels []Channel) int {
-	total := 0
-	for _, channel := range channels {
-		total += channel.TotalMsgCount
+// ----------------------------- Is Total Fetched Posts --------------------
+func (sync *Sync) setTotalFetchedPosts(totalPosts int) error {
+	if sync.Store == nil {
+		return fmt.Errorf("store is not initialized")
 	}
-	return total
+
+	return sync.Store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(totalPosts)))
 }
 
-// *** DONE *** //
-func setTotalFetchedPosts(totalPosts int) error {
-	err := store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(totalPosts)))
+func (sync *Sync) getTotalFetchedPosts() (int, error) {
+	if sync.Store == nil {
+		return 0, fmt.Errorf("store is not initialized")
+	}
+
+	b, err := sync.Store.Get("sync", "total_fetched_posts")
+
 	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// *** DONE *** //
-func setLastFetchedAt(startSyncTime time.Time) error {
-	err := store.Put("sync", "last_fetched_at", []byte(strconv.FormatInt(startSyncTime.UnixMilli(), 10)))
-	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	return strconv.Atoi(string(b))
 }
 
-// *** DONE *** //
-func getLastFetchedAt() (time.Time, error) {
-	b, err := store.Get("sync", "last_fetched_at")
+// ----------------------------- Is Last Fetched At --------------------
+
+func (sync *Sync) setLastFetchedAt(startSyncTime time.Time) error {
+	if sync.Store == nil {
+		return fmt.Errorf("store is not initialized")
+	}
+
+	return sync.Store.Put("sync", "last_fetched_at", []byte(strconv.FormatInt(startSyncTime.UnixMilli(), 10)))
+}
+
+func (sync *Sync) getLastFetchedAt() (time.Time, error) {
+	if sync.Store == nil {
+		return time.Time{}, fmt.Errorf("store is not initialized")
+	}
+
+	b, err := sync.Store.Get("sync", "last_fetched_at")
+
 	if err != nil {
 		return time.Time{}, err
 	}
 
 	lastFetchedAt, err := strconv.ParseInt(string(b), 10, 64)
+
 	if err != nil {
 		fmt.Println("error while parsing int: ", err)
 		return time.Time{}, err
@@ -330,17 +420,16 @@ func getLastFetchedAt() (time.Time, error) {
 	return time.UnixMilli(lastFetchedAt), nil
 }
 
-// *** DONE *** //
-func getTotalFetchedPosts() (int, error) {
-	b, err := store.Get("sync", "total_fetched_posts")
-	if err != nil {
-		return 0, err
-	}
+// ---------------- Utility Functions ----------------
 
-	return strconv.Atoi(string(b))
+func calcTotalPosts(channels []Channel) int {
+	total := 0
+	for _, channel := range channels {
+		total += channel.TotalMsgCount
+	}
+	return total
 }
 
-// *** DONE *** //
 func GetAllChannels() (channels []Channel, err error) {
 	reqUrl := mmAPI + "/channels"
 
