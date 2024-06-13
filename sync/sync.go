@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/EyobAshenaki/chroma-go/db"
@@ -39,48 +40,66 @@ type Channel struct {
 }
 
 type Sync struct {
-	Ticker *time.Ticker
-	Store  *db.DataStore
+	ticker *time.Ticker
+	store  *db.DataStore
 }
 
-func New() *Sync {
-	return &Sync{
-		Store:  &db.DataStore{},
-		Ticker: &time.Ticker{},
-	}
+var instance *Sync
+var once sync.Once
+
+func GetSyncInstance() *Sync {
+	once.Do(func() {
+		instance = &Sync{
+			store:  &db.DataStore{},
+			ticker: &time.Ticker{},
+		}
+	})
+
+	return instance
 }
 
+// initialize the store in sync. if store is has values do nothing
 func (sync *Sync) InitializeStore() {
 	store := db.GetDataStore("mm-sync")
 
 	// set fetch_interval
-	err := store.Put("sync", "fetch_interval", []byte("6"))
-	if err != nil {
-		fmt.Println(err)
+	if _, err := store.Get("sync", "fetch_interval"); err != nil {
+		putError := store.Put("sync", "fetch_interval", []byte("6"))
+		if putError != nil {
+			fmt.Println(putError)
+		}
 	}
 
 	// set is_fetch_in_progress
-	err = store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(false)))
-	if err != nil {
-		fmt.Println(err)
+	if _, err := store.Get("sync", "is_fetch_in_progress"); err != nil {
+		putError := store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(false)))
+		if putError != nil {
+			fmt.Println(putError)
+		}
 	}
 
 	// set is_sync_in_progress
-	err = store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(false)))
-	if err != nil {
-		fmt.Println(err)
+	if _, err := store.Get("sync", "is_sync_in_progress"); err != nil {
+		putError := store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(false)))
+		if putError != nil {
+			fmt.Println(putError)
+		}
 	}
 
 	// set total_fetched_posts
-	err = store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(0)))
-	if err != nil {
-		fmt.Println(err)
+	if _, err := store.Get("sync", "total_fetched_posts"); err != nil {
+		putError := store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(0)))
+		if putError != nil {
+			fmt.Println(putError)
+		}
 	}
 
 	// set last_fetched_at
-	err = store.Put("sync", "last_fetched_at", []byte(strconv.Itoa(0)))
-	if err != nil {
-		fmt.Println(err)
+	if _, err := store.Get("sync", "last_fetched_at"); err != nil {
+		putError := store.Put("sync", "last_fetched_at", []byte(strconv.Itoa(0)))
+		if putError != nil {
+			fmt.Println(putError)
+		}
 	}
 
 	// // set chroma_returned_results
@@ -95,23 +114,25 @@ func (sync *Sync) InitializeStore() {
 	// 	fmt.Println(err)
 	// }
 
-	sync.Store = store
+	if *sync.store == (db.DataStore{}) {
+		sync.store = store
+	}
 }
 
 func (sync *Sync) StopSync() error {
-	if sync.Ticker == nil {
+	if sync.ticker == nil {
 		return fmt.Errorf("sync is not running")
 	}
-	sync.Ticker.Stop()
+	sync.ticker.Stop()
 	return nil
 }
 
 func (sync *Sync) CloseStore() {
-	sync.Store.Close()
+	sync.store.Close()
 }
 
 func (sync *Sync) StartFetch() error {
-	fmt.Println("Start syncing...")
+	fmt.Println("Start fetching...")
 
 	// if fetching is in progress return nothing
 	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress {
@@ -141,6 +162,15 @@ func (sync *Sync) StartFetch() error {
 		return fetchErr
 	}
 
+	// Set fetching to false before returning
+	defer func() error {
+		fetchErr = sync.setIsFetchInProgress(false)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		return nil
+	}()
+
 	//save the time where syncing started
 	startSyncTime := time.Now()
 
@@ -156,11 +186,6 @@ func (sync *Sync) StartFetch() error {
 	// if the since property is not defined all posts will be fetched from MM db
 	if lastFetchedAtInMilliseconds != 0 && totalFetchedPosts != 0 {
 		postParams.Set("since", fmt.Sprintf("%d", lastFetchedAtInMilliseconds))
-	} else {
-		err := sync.setIsSyncInProgress(true)
-		if err != nil {
-			return err
-		}
 	}
 
 	// Get all channels' data
@@ -261,50 +286,97 @@ func (sync *Sync) StartFetch() error {
 	// Print sync completion message
 	fmt.Printf("Fetching posts... %.2f%% complete\n", syncPercentage)
 
-	// Set syncing to false
-	fetchErr = sync.setIsFetchInProgress(false)
-	if fetchErr != nil {
-		return fetchErr
-	}
-
 	return nil
 }
 
+func (sync *Sync) StartSync() (<-chan time.Time, error) {
+	fmt.Println("Start syncing...")
+
+	// if syncing is in progress return nothing
+	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress {
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, fmt.Errorf("sync is in progress")
+	}
+
+	// get fetch interval from db
+	fetchInterval, err := sync.getFetchInterval()
+	if err != nil {
+		return nil, err
+	}
+
+	// set syncing to true so no other sync can start
+	syncErr := sync.setIsSyncInProgress(true)
+	if syncErr != nil {
+		return nil, syncErr
+	}
+
+	// Set syncing to false before returning
+	defer func() error {
+		syncErr = sync.setIsSyncInProgress(false)
+		if syncErr != nil {
+			return syncErr
+		}
+		return nil
+	}()
+
+	// start the ticker
+	sync.ticker = time.NewTicker(time.Duration(fetchInterval) * time.Second)
+
+	// start the fetch loop
+	go func() {
+		defer sync.StopSync()
+		for range sync.ticker.C {
+			fmt.Println("fetching...")
+
+			// start the fetch
+			err := sync.StartFetch()
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
+	}()
+
+	return sync.ticker.C, nil
+}
+
 func (sync *Sync) updateFetchInterval(newInterval time.Duration) error {
-	if sync.Ticker == nil {
+	if sync.ticker == nil {
 		return fmt.Errorf("sync is not running")
 	}
 
 	if newInterval <= 0 {
-		sync.Ticker.Stop()
+		sync.ticker.Stop()
 		return fmt.Errorf("fetch interval much me greater than 0")
 	}
 
 	// reset stops a ticker and resets its period to the specified
 	// duration. The next tick will arrive after the new period elapses.
-	sync.Ticker.Reset(newInterval)
+	sync.ticker.Reset(newInterval)
 
 	return sync.setFetchInterval(newInterval)
 }
 
 // ----------------------------- Is Sync In Progress --------------------
 func (sync *Sync) setFetchInterval(interval time.Duration) error {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return fmt.Errorf("store is not initialized")
 	}
 
-	return sync.Store.Put("sync", "fetch_interval", []byte(strconv.Itoa(int(interval.Hours()))))
+	return sync.store.Put("sync", "fetch_interval", []byte(strconv.Itoa(int(interval.Hours()))))
 }
 
 func (sync *Sync) getFetchInterval() (int, error) {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return 0, fmt.Errorf("store is not initialized")
 	}
 
-	b, err := sync.Store.Get("sync", "fetch_interval")
+	b, err := sync.store.Get("sync", "fetch_interval")
 
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 
 	return strconv.Atoi(string(b))
@@ -312,19 +384,19 @@ func (sync *Sync) getFetchInterval() (int, error) {
 
 // ----------------------------- Is Sync In Progress --------------------
 func (sync *Sync) setIsSyncInProgress(truthVal bool) error {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return fmt.Errorf("store is not initialized")
 	}
 
-	return sync.Store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(truthVal)))
+	return sync.store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(truthVal)))
 }
 
 func (sync *Sync) getIsSyncInProgress() (bool, error) {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return false, fmt.Errorf("store is not initialized")
 	}
 
-	b, err := sync.Store.Get("sync", "is_sync_in_progress")
+	b, err := sync.store.Get("sync", "is_sync_in_progress")
 
 	if err != nil {
 		return false, nil
@@ -335,19 +407,19 @@ func (sync *Sync) getIsSyncInProgress() (bool, error) {
 
 // ----------------------------- Is Fetch In Progress --------------------
 func (sync *Sync) setIsFetchInProgress(truthVal bool) error {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return fmt.Errorf("store is not initialized")
 	}
 
-	return sync.Store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(truthVal)))
+	return sync.store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(truthVal)))
 }
 
 func (sync *Sync) getIsFetchInProgress() (bool, error) {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return false, fmt.Errorf("store is not initialized")
 	}
 
-	b, err := sync.Store.Get("sync", "is_fetch_in_progress")
+	b, err := sync.store.Get("sync", "is_fetch_in_progress")
 
 	if err != nil {
 		return false, nil
@@ -358,19 +430,19 @@ func (sync *Sync) getIsFetchInProgress() (bool, error) {
 
 // ----------------------------- Is Total Fetched Posts --------------------
 func (sync *Sync) setTotalFetchedPosts(totalPosts int) error {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return fmt.Errorf("store is not initialized")
 	}
 
-	return sync.Store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(totalPosts)))
+	return sync.store.Put("sync", "total_fetched_posts", []byte(strconv.Itoa(totalPosts)))
 }
 
 func (sync *Sync) getTotalFetchedPosts() (int, error) {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return 0, fmt.Errorf("store is not initialized")
 	}
 
-	b, err := sync.Store.Get("sync", "total_fetched_posts")
+	b, err := sync.store.Get("sync", "total_fetched_posts")
 
 	if err != nil {
 		return 0, err
@@ -382,19 +454,19 @@ func (sync *Sync) getTotalFetchedPosts() (int, error) {
 // ----------------------------- Is Last Fetched At --------------------
 
 func (sync *Sync) setLastFetchedAt(startSyncTime time.Time) error {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return fmt.Errorf("store is not initialized")
 	}
 
-	return sync.Store.Put("sync", "last_fetched_at", []byte(strconv.FormatInt(startSyncTime.UnixMilli(), 10)))
+	return sync.store.Put("sync", "last_fetched_at", []byte(strconv.FormatInt(startSyncTime.UnixMilli(), 10)))
 }
 
 func (sync *Sync) getLastFetchedAt() (time.Time, error) {
-	if sync.Store == nil {
+	if *sync.store == (db.DataStore{}) {
 		return time.Time{}, fmt.Errorf("store is not initialized")
 	}
 
-	b, err := sync.Store.Get("sync", "last_fetched_at")
+	b, err := sync.store.Get("sync", "last_fetched_at")
 
 	if err != nil {
 		return time.Time{}, err
