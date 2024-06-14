@@ -64,7 +64,7 @@ func (sync *Sync) InitializeStore() {
 
 	// set fetch_interval
 	if _, err := store.Get("sync", "fetch_interval"); err != nil {
-		putError := store.Put("sync", "fetch_interval", []byte("6"))
+		putError := store.Put("sync", "fetch_interval", []byte("30"))
 		if putError != nil {
 			fmt.Println(putError)
 		}
@@ -131,11 +131,13 @@ func (sync *Sync) CloseStore() {
 	sync.store.Close()
 }
 
-func (sync *Sync) StartFetch() error {
-	fmt.Println("Start fetching...")
+func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
+	fmt.Println()
+	fmt.Println("*********** Start fetching... ***********")
+	fmt.Println()
 
 	// if fetching is in progress return nothing
-	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress {
+	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress == true {
 		if err != nil {
 			return err
 		}
@@ -164,6 +166,10 @@ func (sync *Sync) StartFetch() error {
 
 	// Set fetching to false before returning
 	defer func() error {
+		fmt.Println()
+		fmt.Println("*********** Stop fetching ***********")
+		fmt.Println()
+
 		fetchErr = sync.setIsFetchInProgress(false)
 		if fetchErr != nil {
 			return fetchErr
@@ -269,8 +275,11 @@ func (sync *Sync) StartFetch() error {
 			if totalPostsSinceLastSync != 0 {
 				syncPercentage = (float64(loadedPosts) / float64(totalPostsSinceLastSync)) * 100
 			}
-			// Print sync progress
-			fmt.Printf("Syncing posts... %.2f%% complete\n", syncPercentage)
+
+			// Notify the sync function with current progress
+			percentageChan <- syncPercentage
+
+			// TODO: remove this line when in production
 			time.Sleep(1 * time.Second)
 		}
 	}
@@ -289,11 +298,15 @@ func (sync *Sync) StartFetch() error {
 	return nil
 }
 
-func (sync *Sync) StartSync() (<-chan time.Time, error) {
-	fmt.Println("Start syncing...")
+func (sync *Sync) StartSync() (<-chan float64, error) {
+	fmt.Println()
+	fmt.Println("-------------------------------------")
+	fmt.Println("*********** Start syncing ***********")
+	fmt.Println("-------------------------------------")
+	fmt.Println()
 
 	// if syncing is in progress return nothing
-	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress {
+	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress == true {
 		if err != nil {
 			return nil, err
 		}
@@ -315,6 +328,12 @@ func (sync *Sync) StartSync() (<-chan time.Time, error) {
 
 	// Set syncing to false before returning
 	defer func() error {
+		fmt.Println()
+		fmt.Println("-------------------------------------")
+		fmt.Println("*********** Stop syncing ***********")
+		fmt.Println("-------------------------------------")
+		fmt.Println()
+
 		syncErr = sync.setIsSyncInProgress(false)
 		if syncErr != nil {
 			return syncErr
@@ -325,21 +344,25 @@ func (sync *Sync) StartSync() (<-chan time.Time, error) {
 	// start the ticker
 	sync.ticker = time.NewTicker(time.Duration(fetchInterval) * time.Second)
 
+	percentageChan := make(chan float64)
+
 	// start the fetch loop
 	go func() {
-		defer sync.StopSync()
 		for range sync.ticker.C {
-			fmt.Println("fetching...")
-
-			// start the fetch
-			err := sync.StartFetch()
-			if err != nil {
-				fmt.Println(err)
-			}
+			// run the below code in a go routine if you want the
+			// current routine not to wait for it to finish before
+			// resuming execution
+			func() {
+				// start the fetch
+				err := sync.StartFetch(percentageChan)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}()
 		}
 	}()
 
-	return sync.ticker.C, nil
+	return percentageChan, nil
 }
 
 func (sync *Sync) updateFetchInterval(newInterval time.Duration) error {
