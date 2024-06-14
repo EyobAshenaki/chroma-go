@@ -1,12 +1,12 @@
 package sync_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/EyobAshenaki/chroma-go/sync"
@@ -70,22 +70,13 @@ func TestSyncStart(t *testing.T) {
 
 	// ----------------------------------------------
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", getRoot)
-	mux.HandleFunc("/hello", getHello)
+	// mux := http.NewServeMux()
+	// mux.HandleFunc("/", getRoot)
+	// mux.HandleFunc("/hello", getHello)
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
-	serverOne := &http.Server{
-		Addr:    ":3333",
-		Handler: mux,
-		BaseContext: func(l net.Listener) context.Context {
-			ctx = context.WithValue(ctx, keyServerAddr, l.Addr().String())
-			return ctx
-		},
-	}
-
-	// serverTwo := &http.Server{
-	// 	Addr:    ":4444",
+	// ctx, cancelCtx := context.WithCancel(context.Background())
+	// serverOne := &http.Server{
+	// 	Addr:    ":3333",
 	// 	Handler: mux,
 	// 	BaseContext: func(l net.Listener) context.Context {
 	// 		ctx = context.WithValue(ctx, keyServerAddr, l.Addr().String())
@@ -93,34 +84,43 @@ func TestSyncStart(t *testing.T) {
 	// 	},
 	// }
 
-	go func() {
-		err := serverOne.ListenAndServe()
-		if errors.Is(err, http.ErrServerClosed) {
-			fmt.Printf("server one closed\n")
-		} else if err != nil {
-			fmt.Printf("error listening for server one: %s\n", err)
-		}
-		cancelCtx()
-	}()
+	// // serverTwo := &http.Server{
+	// // 	Addr:    ":4444",
+	// // 	Handler: mux,
+	// // 	BaseContext: func(l net.Listener) context.Context {
+	// // 		ctx = context.WithValue(ctx, keyServerAddr, l.Addr().String())
+	// // 		return ctx
+	// // 	},
+	// // }
 
 	// go func() {
-	// 	err := serverTwo.ListenAndServe()
+	// 	err := serverOne.ListenAndServe()
 	// 	if errors.Is(err, http.ErrServerClosed) {
-	// 		fmt.Printf("server two closed\n")
+	// 		fmt.Printf("server one closed\n")
 	// 	} else if err != nil {
-	// 		fmt.Printf("error listening for server two: %s\n", err)
+	// 		fmt.Printf("error listening for server one: %s\n", err)
 	// 	}
 	// 	cancelCtx()
 	// }()
 
-	<-ctx.Done()
+	// // go func() {
+	// // 	err := serverTwo.ListenAndServe()
+	// // 	if errors.Is(err, http.ErrServerClosed) {
+	// // 		fmt.Printf("server two closed\n")
+	// // 	} else if err != nil {
+	// // 		fmt.Printf("error listening for server two: %s\n", err)
+	// // 	}
+	// // 	cancelCtx()
+	// // }()
+
+	// <-ctx.Done()
 
 	// ----------------------------------------------
 
 	// http.HandleFunc("/", getRoot)
 	// http.HandleFunc("/hello", getHello)
 
-	// err := http.ListenAndServe(":3333", mux)
+	// err := http.ListenAndServe(":3333", nil)
 	// if errors.Is(err, http.ErrServerClosed) {
 	// 	fmt.Printf("server closed\n")
 	// } else if err != nil {
@@ -157,6 +157,47 @@ func TestSyncStart(t *testing.T) {
 	// }
 
 	// ----------------------------------------------
+
+	broker := sync.NewSSEServer()
+
+	// Make b the HTTP handler for "/sync/start". This is
+	// possible since it has a ServeHTTP method. That method
+	// is called in a separate goroutine for each
+	// request to "/sync/start".
+	http.Handle("/sync/start", broker)
+
+	go func() {
+		mmSync := sync.GetSyncInstance()
+
+		mmSync.InitializeStore()
+		defer mmSync.CloseStore()
+
+		percentageChan, err := mmSync.StartSync()
+		if err != nil {
+			fmt.Println(fmt.Errorf("Start sync error: %s", err))
+		}
+
+		defer mmSync.StopSync()
+
+		for percent := range percentageChan {
+			fmt.Printf("Syncing posts... %.2f%% complete\n", percent)
+			fmt.Println()
+			fmt.Println("-------------------------------------")
+			fmt.Println()
+
+			msgInByte := []byte(strconv.FormatFloat(percent, 'f', -1, 64))
+
+			broker.SendMessage(msgInByte)
+		}
+	}()
+
+	err := http.ListenAndServe(":3333", nil)
+	if errors.Is(err, http.ErrServerClosed) {
+		fmt.Printf("server closed\n")
+	} else if err != nil {
+		fmt.Printf("error starting server: %s\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Println("Sync test end")
 }
