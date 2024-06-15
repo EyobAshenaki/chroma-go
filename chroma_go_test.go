@@ -1,6 +1,7 @@
 package chroma_go_test
 
 import (
+	"log"
 	"testing"
 
 	chroma_go "github.com/EyobAshenaki/chroma-go"
@@ -8,12 +9,30 @@ import (
 
 func TestChromaGo(t *testing.T) {
 	t.Log("Test start")
-	res := chroma_go.Connect()
+	// godotenv.Load()
 
-	if res != "Connected" {
-		t.Errorf("Expected 'Connected', got '%s'", res)
-		// t.Fail()
+	// log.Println(os.LookupEnv("OPENAI_API_KEY"))
+
+	client, err := chroma_go.Connect()
+	if err != nil {
+		log.Println(err)
+		t.FailNow()
 	}
-	// t.Log(res)
+
+	colnErr := client.GetOrCreateCollection("mattermost")
+	if colnErr != nil {
+		log.Println(colnErr)
+		t.FailNow()
+	}
+
+	// ctx := context.Background()
+
+	// count, err := client.CountCollections(ctx)
+	// if err != nil {
+	// 	log.Println(err)
+	// }
+
+	// log.Printf("Collections found: %v\n", count)
+
 	t.Log("Test end")
 }
