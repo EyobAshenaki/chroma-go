@@ -552,7 +552,7 @@ func GetAllChannels() (channels []Channel, err error) {
 	return channels, nil
 }
 
-// *** DONE *** //
+// Get all posts per page in a channel
 func FetchPostsForPage(channelId string, params url.Values) (postRes PostResponse, err error) {
 	reqUrl := mmAPI + "/channels/" + channelId + "/posts"
 
@@ -588,6 +588,9 @@ func FetchPostsForPage(channelId string, params url.Values) (postRes PostRespons
 	return postRes, nil
 }
 
+// Deletes posts that have been deleted from mattermost
+// from chroma database and filters system and non-text
+// messages
 func deleteAndFilterPost(posts []Post) (filteredPosts []Post, err error) {
 	// TODO: filter out any stickers / emojis
 	// TODO: replace user handles with their real names
