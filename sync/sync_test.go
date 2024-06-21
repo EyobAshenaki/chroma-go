@@ -3,7 +3,6 @@ package sync_test
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -25,15 +24,15 @@ func TestSyncStart(t *testing.T) {
 	// }
 
 	// for result := range c {
-	// 	fmt.Println("Received result: ", result)
+	// 	fmt.Printf("Syncing posts... %.2f%% complete\n", result)
 	// }
 
 	// mmSync.CloseStore()
 
 	// ----------------------------------------------
 	// ticker := time.NewTicker(2 * time.Second)
+	// fmt.Println("Ticker set and ready! ", time.Now())
 
-	// // done := make(chan bool)
 	// ctx, cancelCtx := context.WithCancel(context.Background())
 
 	// go func() {
@@ -41,8 +40,8 @@ func TestSyncStart(t *testing.T) {
 	// 		select {
 	// 		case t := <-ticker.C:
 	// 			func() {
-	// 				time.Sleep(3 * time.Second)
 	// 				fmt.Println("Current time: ", t)
+	// 				time.Sleep(3 * time.Second)
 	// 			}()
 
 	// 		case <-ctx.Done():
@@ -57,76 +56,9 @@ func TestSyncStart(t *testing.T) {
 	// }()
 
 	// // give the ticker some time to run before being canceled
-	// time.Sleep(6 * time.Second)
+	// time.Sleep(60 * time.Second)
 
 	// cancelCtx()
-
-	// // give the ticker some time to run
-	// time.Sleep(10 * time.Second)
-
-	// // stops the ticker execution
-	// done <- true
-	// cancelCtx()
-
-	// ----------------------------------------------
-
-	// mux := http.NewServeMux()
-	// mux.HandleFunc("/", getRoot)
-	// mux.HandleFunc("/hello", getHello)
-
-	// ctx, cancelCtx := context.WithCancel(context.Background())
-	// serverOne := &http.Server{
-	// 	Addr:    ":3333",
-	// 	Handler: mux,
-	// 	BaseContext: func(l net.Listener) context.Context {
-	// 		ctx = context.WithValue(ctx, keyServerAddr, l.Addr().String())
-	// 		return ctx
-	// 	},
-	// }
-
-	// // serverTwo := &http.Server{
-	// // 	Addr:    ":4444",
-	// // 	Handler: mux,
-	// // 	BaseContext: func(l net.Listener) context.Context {
-	// // 		ctx = context.WithValue(ctx, keyServerAddr, l.Addr().String())
-	// // 		return ctx
-	// // 	},
-	// // }
-
-	// go func() {
-	// 	err := serverOne.ListenAndServe()
-	// 	if errors.Is(err, http.ErrServerClosed) {
-	// 		fmt.Printf("server one closed\n")
-	// 	} else if err != nil {
-	// 		fmt.Printf("error listening for server one: %s\n", err)
-	// 	}
-	// 	cancelCtx()
-	// }()
-
-	// // go func() {
-	// // 	err := serverTwo.ListenAndServe()
-	// // 	if errors.Is(err, http.ErrServerClosed) {
-	// // 		fmt.Printf("server two closed\n")
-	// // 	} else if err != nil {
-	// // 		fmt.Printf("error listening for server two: %s\n", err)
-	// // 	}
-	// // 	cancelCtx()
-	// // }()
-
-	// <-ctx.Done()
-
-	// ----------------------------------------------
-
-	// http.HandleFunc("/", getRoot)
-	// http.HandleFunc("/hello", getHello)
-
-	// err := http.ListenAndServe(":3333", nil)
-	// if errors.Is(err, http.ErrServerClosed) {
-	// 	fmt.Printf("server closed\n")
-	// } else if err != nil {
-	// 	fmt.Printf("error starting server: %s\n", err)
-	// 	os.Exit(1)
-	// }
 
 	// ----------------------------------------------
 
@@ -199,37 +131,7 @@ func TestSyncStart(t *testing.T) {
 		os.Exit(1)
 	}
 
+	// ----------------------------------------------
+
 	fmt.Println("Sync test end")
-}
-
-const keyServerAddr = "serverAddr"
-
-func getRoot(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	fmt.Printf("%s: got / request\n", ctx.Value(keyServerAddr))
-
-	mmSync := sync.GetSyncInstance()
-	mmSync.InitializeStore()
-
-	c, err := mmSync.StartSync()
-
-	if err != nil {
-		fmt.Println(fmt.Errorf("Start sync error: %s", err))
-	}
-
-	for result := range c {
-		fmt.Println("Received result: ", result)
-	}
-
-	mmSync.CloseStore()
-
-	io.WriteString(w, "This is my website!\n")
-}
-
-func getHello(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	fmt.Printf("%s: got / request\n", ctx.Value(keyServerAddr))
-	io.WriteString(w, "Hello, HTTP!\n")
 }
