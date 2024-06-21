@@ -1,18 +1,22 @@
 package sync
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
 	"time"
 
+	chroma_go "github.com/EyobAshenaki/chroma-go"
 	"github.com/EyobAshenaki/chroma-go/db"
+	chroma "github.com/amikos-tech/chroma-go"
 )
 
-const token = "Bearer yokb6gwehpfhmn64f9k63r4xiw"
+const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
 const mmAPI = "http://localhost:8065/api/v4"
 
 type Post struct {
@@ -40,8 +44,9 @@ type Channel struct {
 }
 
 type Sync struct {
-	ticker *time.Ticker
-	store  *db.DataStore
+	ticker               *time.Ticker
+	store                *db.DataStore
+	mattermostCollection *chroma.Collection
 }
 
 var instance *Sync
@@ -49,9 +54,20 @@ var once sync.Once
 
 func GetSyncInstance() *Sync {
 	once.Do(func() {
+		chromaClient, err := chroma_go.GetChromaInstance()
+		if err != nil {
+			log.Fatalf("Error while connecting to chroma %v \n", err)
+		}
+
+		newCollection, colError := chromaClient.GetOrCreateCollection("mattermost")
+		if colError != nil {
+			log.Fatalf("Error while creating / getting collection: %v \n", err)
+		}
+
 		instance = &Sync{
-			store:  &db.DataStore{},
-			ticker: &time.Ticker{},
+			store:                &db.DataStore{},
+			ticker:               &time.Ticker{},
+			mattermostCollection: newCollection,
 		}
 	})
 
@@ -64,7 +80,7 @@ func (sync *Sync) InitializeStore() {
 
 	// set fetch_interval
 	if _, err := store.Get("sync", "fetch_interval"); err != nil {
-		putError := store.Put("sync", "fetch_interval", []byte("30"))
+		putError := store.Put("sync", "fetch_interval", []byte("5"))
 		if putError != nil {
 			fmt.Println(putError)
 		}
@@ -137,45 +153,35 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 	fmt.Println()
 
 	// if fetching is in progress return nothing
-	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress == true {
+	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress {
 		if err != nil {
-			return err
+			log.Fatalln(err)
 		}
 
-		return fmt.Errorf("fetch is in progress")
+		log.Fatalf("fetch is in progress")
 	}
 
 	// get last synced time from db
 	lastFetchedAt, err := sync.getLastFetchedAt()
 	if err != nil {
-		return err
+		log.Fatalln(err)
 	}
 	lastFetchedAtInMilliseconds := lastFetchedAt.UnixMilli()
 
 	// get total fetched posts from db
 	totalFetchedPosts, err := sync.getTotalFetchedPosts()
 	if err != nil {
-		return err
+		log.Fatalln(err)
 	}
 
 	// set fetching to true so no other sync can start
-	fetchErr := sync.setIsFetchInProgress(true)
-	if fetchErr != nil {
-		return fetchErr
+	err = sync.setIsFetchInProgress(true)
+	if err != nil {
+		log.Fatalln(err)
 	}
 
 	// Set fetching to false before returning
-	defer func() error {
-		fmt.Println()
-		fmt.Println("*********** Stop fetching ***********")
-		fmt.Println()
-
-		fetchErr = sync.setIsFetchInProgress(false)
-		if fetchErr != nil {
-			return fetchErr
-		}
-		return nil
-	}()
+	defer sync.stopFetch()
 
 	//save the time where syncing started
 	startSyncTime := time.Now()
@@ -197,7 +203,8 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 	// Get all channels' data
 	channels, err := GetAllChannels()
 	if err != nil {
-		return err
+		sync.stopFetch()
+		log.Fatalln(err)
 	}
 
 	totalPosts := calcTotalPosts(channels)
@@ -219,7 +226,12 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 			// Fetch posts for the current page
 			postsRes, err := FetchPostsForPage(channel.Id, postParams)
 			if err != nil {
-				return err
+				sync.stopFetch()
+				log.Fatalln(err)
+			}
+
+			if len(postsRes.Posts) <= 0 {
+				continue
 			}
 
 			// add posts while keeping order
@@ -244,16 +256,20 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 			// remove deleted posts from chroma and filter out any irrelevant posts
 			filteredPosts, err := deleteAndFilterPost(posts)
 			if err != nil {
-				return err
+				sync.stopFetch()
+				log.Fatalln(err)
 			}
 
 			// upsert the filtered channel posts to chroma
-			if err := upsertPostsToChroma(filteredPosts, access); err != nil {
-				return err
+			if len(filteredPosts) > 0 {
+				if err := upsertPostsToChroma(filteredPosts, access); err != nil {
+					sync.stopFetch()
+					log.Fatalln(err)
+				}
 			}
 
 			// Set the total fetched posts in db
-			sync.setTotalFetchedPosts(loadedPosts)
+			sync.setTotalFetchedPosts(totalFetchedPosts + loadedPosts)
 
 			// if the previous post id is empty, we have reached the end of the posts for this channel
 			if postsRes.PreviousPostId == "" {
@@ -265,7 +281,8 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 			nxtPage, err := strconv.Atoi(page)
 			if err != nil {
 				fmt.Println("Error converting string to int:", err)
-				return err
+				sync.stopFetch()
+				log.Fatalln(err)
 			}
 			nxtPage += 1
 
@@ -278,13 +295,10 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 
 			// Notify the sync function with current progress
 			percentageChan <- syncPercentage
-
-			// TODO: remove this line when in production
-			time.Sleep(1 * time.Second)
 		}
 	}
-
-	syncPercentage = (float64(loadedPosts) / float64(totalPostsSinceLastSync)) * 100
+	// manual completion indication
+	syncPercentage = 100
 
 	fmt.Println("Total posts:", totalPostsSinceLastSync)
 	fmt.Println("Total posts fetched:", totalFetchedPosts)
@@ -298,6 +312,32 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 	return nil
 }
 
+func (sync *Sync) stopFetch() error {
+	fmt.Println()
+	fmt.Println("*********** Stop fetching ***********")
+	fmt.Println()
+
+	err := sync.setIsFetchInProgress(false)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	return nil
+}
+
+func (sync *Sync) stopSync() error {
+	fmt.Println()
+	fmt.Println("-------------------------------------")
+	fmt.Println("*********** Stop syncing ***********")
+	fmt.Println("-------------------------------------")
+	fmt.Println()
+
+	err := sync.setIsSyncInProgress(false)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	return nil
+}
+
 func (sync *Sync) StartSync() (<-chan float64, error) {
 	fmt.Println()
 	fmt.Println("-------------------------------------")
@@ -308,38 +348,23 @@ func (sync *Sync) StartSync() (<-chan float64, error) {
 	// if syncing is in progress return nothing
 	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress == true {
 		if err != nil {
-			return nil, err
+			log.Fatalln(err)
 		}
 
-		return nil, fmt.Errorf("sync is in progress")
+		log.Fatalln("sync is in progress")
 	}
 
 	// get fetch interval from db
 	fetchInterval, err := sync.getFetchInterval()
 	if err != nil {
-		return nil, err
+		log.Fatalln(err)
 	}
 
 	// set syncing to true so no other sync can start
-	syncErr := sync.setIsSyncInProgress(true)
-	if syncErr != nil {
-		return nil, syncErr
+	err = sync.setIsSyncInProgress(true)
+	if err != nil {
+		log.Fatalln(err)
 	}
-
-	// Set syncing to false before returning
-	defer func() error {
-		fmt.Println()
-		fmt.Println("-------------------------------------")
-		fmt.Println("*********** Stop syncing ***********")
-		fmt.Println("-------------------------------------")
-		fmt.Println()
-
-		syncErr = sync.setIsSyncInProgress(false)
-		if syncErr != nil {
-			return syncErr
-		}
-		return nil
-	}()
 
 	// start the ticker
 	sync.ticker = time.NewTicker(time.Duration(fetchInterval) * time.Second)
@@ -348,15 +373,18 @@ func (sync *Sync) StartSync() (<-chan float64, error) {
 
 	// start the fetch loop
 	go func() {
-		for range sync.ticker.C {
-			// run the below code in a go routine if you want the
-			// current routine not to wait for it to finish before
-			// resuming execution
+		// Set syncing to false before returning
+		defer sync.stopSync()
+
+		for tickerTime := range sync.ticker.C {
+			log.Printf("Fetch started at: %v \n", tickerTime)
+			// run the below code in a go routine if you want the current routine not to wait for it to finish before resuming execution
 			func() {
 				// start the fetch
 				err := sync.StartFetch(percentageChan)
 				if err != nil {
-					fmt.Println(err)
+					sync.stopSync()
+					log.Fatalln(err)
 				}
 			}()
 		}
@@ -371,7 +399,7 @@ func (sync *Sync) updateFetchInterval(newInterval time.Duration) error {
 	}
 
 	if newInterval <= 0 {
-		sync.ticker.Stop()
+		// sync.ticker.Stop()
 		return fmt.Errorf("fetch interval much me greater than 0")
 	}
 
@@ -472,6 +500,13 @@ func (sync *Sync) getTotalFetchedPosts() (int, error) {
 	}
 
 	return strconv.Atoi(string(b))
+
+	// documentCount, err := sync.mattermostCollection.Count(context.Background())
+	// if err != nil {
+	// 	return 0, err
+	// }
+
+	// return int(documentCount), nil
 }
 
 // ----------------------------- Is Last Fetched At --------------------
@@ -518,8 +553,6 @@ func calcTotalPosts(channels []Channel) int {
 func GetAllChannels() (channels []Channel, err error) {
 	reqUrl := mmAPI + "/channels"
 
-	fmt.Println("Request URL:", reqUrl)
-
 	req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
 	if err != nil {
 		return nil, fmt.Errorf("client: could not create request: %s\n", err)
@@ -538,7 +571,7 @@ func GetAllChannels() (channels []Channel, err error) {
 	defer response.Body.Close()
 
 	if response.StatusCode != 200 {
-		return nil, fmt.Errorf("client: Failed to fetch new posts. Status code: %d", response.StatusCode)
+		return nil, fmt.Errorf("client: Failed to fetch channels. Status code: %d", response.StatusCode)
 	}
 
 	// automatically filters the response body to only include the fields
@@ -596,32 +629,83 @@ func deleteAndFilterPost(posts []Post) (filteredPosts []Post, err error) {
 	// TODO: replace user handles with their real names
 
 	for _, post := range posts {
-		// TODO: delete posts from chroma if it's been deleted from mattermost
+		// delete posts from chroma if it's been deleted from mattermost
 		// delete any posts that have been deleted
 		if post.DeleteAt > 0 {
-			deleteFromChroma("collection_name", post.Id)
+			deleteFromChroma(post.Id)
 		}
 
-		// TODO: filter posts that are not of type text and empty messages
+		// filter out posts that are not of type text and empty messages
 		// filter out any irrelevant posts
 		if post.Type == "" && post.Message != "" {
+			// TODO: format the post in this form "(date) user-name: message_text" before append
 			filteredPosts = append(filteredPosts, post)
 		}
 	}
 
-	return nil, nil
+	return filteredPosts, nil
 }
 
-func deleteFromChroma(collectionName, postId string) {
-	// TODO: implement this
+func deleteFromChroma(postId string) error {
+	fmt.Println("Deleting post from chroma...", postId)
 
-	fmt.Println("Deleting post from chroma...", collectionName, postId)
+	ids := []string{postId}
+
+	_, delError := GetSyncInstance().mattermostCollection.Delete(context.Background(), ids, nil, nil)
+	if delError != nil {
+		return delError
+	}
+
+	return nil
 }
 
 func upsertPostsToChroma(filteredPosts []Post, access string) (err error) {
-	// TODO: implement this
+	log.Println("Upserting posts to chroma...", len(filteredPosts), access)
 
-	fmt.Println("Upserting posts to chroma...", filteredPosts, access)
+	metadatas := []map[string]interface{}{}
+	documents := []string{}
+	ids := []string{}
+
+	/*
+		{
+			"id" : "message_id",
+			"document" : "(date) User: message_text",
+			"metadata" : {
+					"source": "mm",
+					"access" : "pri / pub",
+					"channel_id" : "ch_0000",
+					"user_id" : "usr_0000",
+			}
+		}
+	*/
+
+	// extract the mettadatas, ids and documents from the filtered posts in the above format
+	for _, post := range filteredPosts {
+		ids = append(ids, post.Id)
+		documents = append(documents, post.Message)
+
+		metadata := map[string]interface{}{
+			"source":     "mm",
+			"access":     access,
+			"channel_id": post.ChannelId,
+			"user_id":    post.UserId,
+		}
+		metadatas = append(metadatas, metadata)
+	}
+
+	// Even tho the embeddings are not provided, this function call will embed the
+	// documents using the embedding function defined in the collection
+	upsertedCollection, upError := GetSyncInstance().mattermostCollection.Upsert(context.Background(), nil, metadatas, documents, ids)
+	if upError != nil {
+		log.Fatalf("Failed to upsert to chroma: %v \n", upError)
+	}
+
+	documentsCount, countError := upsertedCollection.Count(context.Background())
+	if countError != nil {
+		log.Printf("error counting document in collection: %v", countError)
+	}
+
+	log.Printf("Documents count: %v \n", documentsCount)
 
 	return nil
 }
