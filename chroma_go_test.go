@@ -1,6 +1,7 @@
 package chroma_go_test
 
 import (
+	"context"
 	"log"
 	"testing"
 
@@ -13,26 +14,26 @@ func TestChromaGo(t *testing.T) {
 
 	// log.Println(os.LookupEnv("OPENAI_API_KEY"))
 
-	client, err := chroma_go.Connect()
+	client, err := chroma_go.GetChromaInstance()
 	if err != nil {
 		log.Println(err)
 		t.FailNow()
 	}
 
-	colnErr := client.GetOrCreateCollection("mattermost")
-	if colnErr != nil {
-		log.Println(colnErr)
+	collection, colError := client.GetOrCreateCollection("mattermost")
+	if colError != nil {
+		log.Println(colError)
 		t.FailNow()
 	}
 
-	// ctx := context.Background()
+	log.Println(collection)
 
-	// count, err := client.CountCollections(ctx)
-	// if err != nil {
-	// 	log.Println(err)
-	// }
+	documentCount, countError := collection.Count(context.Background())
+	if countError != nil {
+		log.Printf("error counting document in collection: %v", countError)
+	}
 
-	// log.Printf("Collections found: %v\n", count)
+	log.Printf("Documents count: %v \n", documentCount)
 
 	t.Log("Test end")
 }
