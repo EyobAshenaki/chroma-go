@@ -4,13 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
 	"sync"
 
 	chroma "github.com/amikos-tech/chroma-go"
 	"github.com/amikos-tech/chroma-go/collection"
-	openai "github.com/amikos-tech/chroma-go/openai"
 	"github.com/amikos-tech/chroma-go/types"
 	"github.com/joho/godotenv"
 )
@@ -23,7 +20,7 @@ type ChromaClient struct {
 
 var once sync.Once
 
-func Connect() (*ChromaClient, error) {
+func GetChromaInstance() (*ChromaClient, error) {
 	fmt.Println("Connecting to Chroma ...")
 
 	once.Do(func() {
@@ -44,7 +41,7 @@ func Connect() (*ChromaClient, error) {
 	return &instance, nil
 }
 
-func (chromaClient *ChromaClient) GetOrCreateCollection(collectionType string) error {
+func (chromaClient *ChromaClient) GetOrCreateCollection(collectionType string) (*chroma.Collection, error) {
 	godotenv.Load()
 
 	if collectionType == "" {
@@ -52,67 +49,26 @@ func (chromaClient *ChromaClient) GetOrCreateCollection(collectionType string) e
 	}
 
 	if chromaClient == nil {
-		return errors.New("chroma db is not connected")
+		return nil, errors.New("chroma db is not connected")
 	}
 
-	openaiEvalFunc, err := openai.NewOpenAIEmbeddingFunction(os.Getenv("OPENAI_API_KEY"))
-	if err != nil {
-		log.Fatalf("Error creating OpenAI embedding function: %s \n", err)
-	}
+	collectionName := collectionType + "_messages"
+	metadatas := map[string]interface{}{}
+	embeddingFunction := types.NewConsistentHashEmbeddingFunction()
 
-	collectionName := collectionType + "messages"
-
+	// Creates new collection, if the collection doesn't exist
+	// Returns a collection, if the collection exists
 	newCollection, err := chromaClient.client.NewCollection(
 		context.TODO(),
 		collection.WithName(collectionName),
-		collection.WithMetadata("key1", "value1"),
-		collection.WithEmbeddingFunction(openaiEvalFunc),
+		collection.WithMetadatas(metadatas),
+		collection.WithEmbeddingFunction(embeddingFunction),
 		collection.WithHNSWDistanceFunction(types.COSINE),
 		collection.WithCreateIfNotExist(true),
 	)
 	if err != nil {
-		log.Fatalf("Error creating collection: %s \n", err)
+		return nil, err
 	}
 
-	// TODO: Create a record set and add the data that I want to embed
-
-	// Create a new record set with to hold the records to insert
-	recordSet, err := types.NewRecordSet(
-		types.WithEmbeddingFunction(openaiEvalFunc),
-		types.WithIDGenerator(types.NewULIDGenerator()),
-	)
-	if err != nil {
-		log.Fatalf("Error creating record set: %s \n", err)
-	}
-
-	// Add a few records to the record set
-	recordSet.WithRecord(types.WithDocument("My name is John. And I have two dogs."), types.WithMetadata("key1", "value1"))
-	recordSet.WithRecord(types.WithDocument("My name is Jane. I am a data scientist."), types.WithMetadata("key2", "value2"))
-
-	// log.Println("Record set: ", recordSet)
-	// log.Println("Collection: ", newCollection)
-
-	// Build and validate the record set (this will create embeddings if not already present)
-	_, err = recordSet.BuildAndValidate(context.TODO())
-	if err != nil {
-		log.Fatalf("Error validating record set: %s \n", err)
-	}
-
-	// // Add the records to the collection
-	// _, err = newCollection.AddRecords(context.Background(), recordSet)
-	// if err != nil {
-	// 	log.Fatalf("Error adding documents: %s \n", err)
-	// }
-
-	// TODO: Next get the embeddings and other necessary data from the record set and upsert then to chroma
-
-	// Count the number of documents in the collection
-	countDocs, qrerr := newCollection.Count(context.TODO())
-	if qrerr != nil {
-		log.Fatalf("Error counting documents: %s \n", qrerr)
-	}
-
-	log.Println("Number of documents is: ", countDocs)
-
-	return nil
+	return newCollection, nil
 }
