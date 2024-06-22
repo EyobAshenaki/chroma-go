@@ -1,8 +1,6 @@
 package chroma_go_test
 
 import (
-	"context"
-	"log"
 	"testing"
 
 	chroma_go "github.com/EyobAshenaki/chroma-go"
@@ -10,30 +8,30 @@ import (
 
 func TestChromaGo(t *testing.T) {
 	t.Log("Test start")
-	// godotenv.Load()
 
-	// log.Println(os.LookupEnv("OPENAI_API_KEY"))
+	client := chroma_go.GetChromaInstance()
 
-	client, err := chroma_go.GetChromaInstance()
-	if err != nil {
-		log.Println(err)
-		t.FailNow()
+	// collection, colError := client.GetOrCreateCollection("mattermost")
+	// if colError != nil {
+	// 	log.Println(colError)
+	// 	t.FailNow()
+	// }
+
+	// log.Println(collection)
+
+	// documentCount, countError := collection.Count(context.Background())
+	// if countError != nil {
+	// 	log.Printf("error counting document in collection: %v", countError)
+	// }
+
+	// log.Printf("Documents count: %v \n", documentCount)
+
+	mmChannelIds := []interface{}{
+		// "9unddga5zin75goadjbwipz9tr",
+		// "jdwhwtegcpb3tei871ohw9sz9y",
 	}
 
-	collection, colError := client.GetOrCreateCollection("mattermost")
-	if colError != nil {
-		log.Println(colError)
-		t.FailNow()
-	}
-
-	log.Println(collection)
-
-	documentCount, countError := collection.Count(context.Background())
-	if countError != nil {
-		log.Printf("error counting document in collection: %v", countError)
-	}
-
-	log.Printf("Documents count: %v \n", documentCount)
+	client.Query("testing", mmChannelIds)
 
 	t.Log("Test end")
 }

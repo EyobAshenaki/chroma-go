@@ -54,14 +54,11 @@ var once sync.Once
 
 func GetSyncInstance() *Sync {
 	once.Do(func() {
-		chromaClient, err := chroma_go.GetChromaInstance()
-		if err != nil {
-			log.Fatalf("Error while connecting to chroma %v \n", err)
-		}
+		chromaClient := chroma_go.GetChromaInstance()
 
 		newCollection, colError := chromaClient.GetOrCreateCollection("mattermost")
 		if colError != nil {
-			log.Fatalf("Error while creating / getting collection: %v \n", err)
+			log.Fatalf("Error while creating / getting collection: %v \n", colError)
 		}
 
 		instance = &Sync{
