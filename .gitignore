@@ -1,3 +1,5 @@
 /chroma
 .env
 /sync/*.db
+/slack/upload
+/slack/extracted_slack_data

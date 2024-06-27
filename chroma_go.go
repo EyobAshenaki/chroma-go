@@ -2,11 +2,11 @@ package chroma_go
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	chroma "github.com/amikos-tech/chroma-go"
 	"github.com/amikos-tech/chroma-go/collection"
@@ -59,13 +59,10 @@ func (chromaClient *ChromaClient) GetOrCreateCollection(collectionType string) (
 	metadatas := map[string]interface{}{}
 	embeddingFunction := types.NewConsistentHashEmbeddingFunction()
 
-	cxtWithTimeout, cancelCtxWithTimeout := context.WithTimeout(context.Background(), 1*time.Minute)
-	defer cancelCtxWithTimeout()
-
 	// Creates new collection, if the collection doesn't exist
 	// Returns a collection, if the collection exists
 	newCollection, err := chromaClient.client.NewCollection(
-		cxtWithTimeout,
+		context.Background(),
 		collection.WithName(collectionName),
 		collection.WithMetadatas(metadatas),
 		collection.WithEmbeddingFunction(embeddingFunction),
@@ -110,12 +107,9 @@ func (chromaClient *ChromaClient) Query(query string, mmChannelIds []interface{}
 		inExpression = inExpr
 	}
 
-	cxtWithTimeout, cancelCtxWithTimeout := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancelCtxWithTimeout()
-
 	// query the mattermost collection
 	mmResponse, mmResError := mattermostCollection.Query(
-		cxtWithTimeout,
+		context.Background(),
 		queryTexts,
 		n_results,
 		inExpression,
@@ -128,7 +122,7 @@ func (chromaClient *ChromaClient) Query(query string, mmChannelIds []interface{}
 
 	// query the slack collection
 	slkResponse, slkResError := slackCollection.Query(
-		cxtWithTimeout,
+		context.Background(),
 		queryTexts,
 		n_results,
 		nil,
@@ -138,6 +132,10 @@ func (chromaClient *ChromaClient) Query(query string, mmChannelIds []interface{}
 	if slkResError != nil {
 		log.Fatalf("error while querying slack collection: %v \n", slkResError)
 	}
+
+	// log the response
+	responseJSON, _ := json.MarshalIndent(slkResponse, "->", "  ")
+	fmt.Println(string(responseJSON))
 
 	// combine the slack and mattermost responses
 	response := chroma.QueryResults{
