@@ -63,7 +63,7 @@ func GetSyncInstance() *Sync {
 
 		instance = &Sync{
 			store:                &db.DataStore{},
-			ticker:               &time.Ticker{},
+			ticker:               nil,
 			mattermostCollection: newCollection,
 		}
 	})
@@ -77,7 +77,7 @@ func (sync *Sync) InitializeStore() {
 
 	// set fetch_interval
 	if _, err := store.Get("sync", "fetch_interval"); err != nil {
-		putError := store.Put("sync", "fetch_interval", []byte("5"))
+		putError := store.Put("sync", "fetch_interval", []byte("15"))
 		if putError != nil {
 			fmt.Println(putError)
 		}
@@ -133,18 +133,37 @@ func (sync *Sync) InitializeStore() {
 }
 
 func (sync *Sync) StopSync() error {
-	if sync.ticker == nil {
-		return fmt.Errorf("sync is not running")
+	err := sync.setIsSyncInProgress(false)
+	if err != nil {
+		return err
 	}
-	sync.ticker.Stop()
+
+	fmt.Println()
+	fmt.Println("-------------------------------------")
+	fmt.Println("*********** Stop syncing ***********")
+	fmt.Println("-------------------------------------")
+	fmt.Println()
+
 	return nil
+}
+
+func (sync *Sync) StopTicker() {
+	sync.ticker.Stop()
+}
+
+func (sync *Sync) SetTickerNil() {
+	sync.ticker = nil
+}
+
+func (sync *Sync) IsTickerNil() bool {
+	return sync.ticker == nil
 }
 
 func (sync *Sync) CloseStore() {
 	sync.store.Close()
 }
 
-func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
+func (sync *Sync) StartFetch(percentageChan chan float64, ctx context.Context) error {
 	fmt.Println()
 	fmt.Println("*********** Start fetching... ***********")
 	fmt.Println()
@@ -152,33 +171,33 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 	// if fetching is in progress return nothing
 	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress {
 		if err != nil {
-			log.Fatalln(err)
+			return err
 		}
 
-		log.Fatalf("fetch is in progress")
+		return fmt.Errorf("fetch is in progress")
 	}
 
 	// get last synced time from db
 	lastFetchedAt, err := sync.getLastFetchedAt()
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	lastFetchedAtInMilliseconds := lastFetchedAt.UnixMilli()
 
 	// get total fetched posts from db
 	totalFetchedPosts, err := sync.getTotalFetchedPosts()
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 
 	// set fetching to true so no other sync can start
 	err = sync.setIsFetchInProgress(true)
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 
-	// Set fetching to false before returning
-	defer sync.stopFetch()
+	// // Set fetching to false before returning
+	// defer sync.stopFetch()
 
 	//save the time where syncing started
 	startSyncTime := time.Now()
@@ -200,8 +219,7 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 	// Get all channels' data
 	channels, err := GetAllChannels()
 	if err != nil {
-		sync.stopFetch()
-		log.Fatalln(err)
+		return err
 	}
 
 	totalPosts := calcTotalPosts(channels)
@@ -223,8 +241,7 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 			// Fetch posts for the current page
 			postsRes, err := FetchPostsForPage(channel.Id, postParams)
 			if err != nil {
-				sync.stopFetch()
-				log.Fatalln(err)
+				return err
 			}
 
 			if len(postsRes.Posts) <= 0 {
@@ -253,15 +270,13 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 			// remove deleted posts from chroma and filter out any irrelevant posts
 			filteredPosts, err := deleteAndFilterPost(posts)
 			if err != nil {
-				sync.stopFetch()
-				log.Fatalln(err)
+				return err
 			}
 
 			// upsert the filtered channel posts to chroma
 			if len(filteredPosts) > 0 {
 				if err := upsertPostsToChroma(filteredPosts, access); err != nil {
-					sync.stopFetch()
-					log.Fatalln(err)
+					return err
 				}
 			}
 
@@ -277,9 +292,7 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 			page := postParams.Get("page")
 			nxtPage, err := strconv.Atoi(page)
 			if err != nil {
-				fmt.Println("Error converting string to int:", err)
-				sync.stopFetch()
-				log.Fatalln(err)
+				return fmt.Errorf("Error converting string to int: %v", err)
 			}
 			nxtPage += 1
 
@@ -290,8 +303,16 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 				syncPercentage = (float64(loadedPosts) / float64(totalPostsSinceLastSync)) * 100
 			}
 
-			// Notify the sync function with current progress
-			percentageChan <- syncPercentage
+			select {
+			case <-ctx.Done():
+				log.Println("fetch interrupted")
+				close(percentageChan)
+				return ctx.Err()
+			default:
+				log.Println("Send percentage from fetch")
+				percentageChan <- syncPercentage
+			}
+
 		}
 	}
 	// manual completion indication
@@ -310,32 +331,18 @@ func (sync *Sync) StartFetch(percentageChan chan<- float64) error {
 }
 
 func (sync *Sync) stopFetch() error {
+	err := sync.setIsFetchInProgress(false)
+	if err != nil {
+		return err
+	}
+
 	fmt.Println()
 	fmt.Println("*********** Stop fetching ***********")
 	fmt.Println()
-
-	err := sync.setIsFetchInProgress(false)
-	if err != nil {
-		log.Fatalln(err)
-	}
 	return nil
 }
 
-func (sync *Sync) stopSync() error {
-	fmt.Println()
-	fmt.Println("-------------------------------------")
-	fmt.Println("*********** Stop syncing ***********")
-	fmt.Println("-------------------------------------")
-	fmt.Println()
-
-	err := sync.setIsSyncInProgress(false)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	return nil
-}
-
-func (sync *Sync) StartSync() (<-chan float64, error) {
+func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan float64) error {
 	fmt.Println()
 	fmt.Println("-------------------------------------")
 	fmt.Println("*********** Start syncing ***********")
@@ -343,51 +350,55 @@ func (sync *Sync) StartSync() (<-chan float64, error) {
 	fmt.Println()
 
 	// if syncing is in progress return nothing
-	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress == true {
+	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress {
 		if err != nil {
-			log.Fatalln(err)
+			return err
 		}
 
-		log.Fatalln("sync is in progress")
+		return fmt.Errorf("sync is in progress")
 	}
 
 	// get fetch interval from db
 	fetchInterval, err := sync.getFetchInterval()
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 
 	// set syncing to true so no other sync can start
 	err = sync.setIsSyncInProgress(true)
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 
 	// start the ticker
 	sync.ticker = time.NewTicker(time.Duration(fetchInterval) * time.Second)
 
-	percentageChan := make(chan float64)
+	// Set isFetchInProgress to false before returning
+	defer sync.stopFetch()
 
-	// start the fetch loop
-	go func() {
-		// Set syncing to false before returning
-		defer sync.stopSync()
+	// // stop ticker and ser isSyncInProgress to false before returning
+	// defer sync.StopSync()
 
-		for tickerTime := range sync.ticker.C {
-			log.Printf("Fetch started at: %v \n", tickerTime)
-			// run the below code in a go routine if you want the current routine not to wait for it to finish before resuming execution
-			func() {
-				// start the fetch
-				err := sync.StartFetch(percentageChan)
-				if err != nil {
-					sync.stopSync()
-					log.Fatalln(err)
-				}
-			}()
+	for {
+		select {
+		case <-ctxWithCancel.Done():
+			log.Println("sync interrupted")
+			return fmt.Errorf("syncing error: %v", ctxWithCancel.Err())
+		case tickerChan, ok := <-sync.ticker.C:
+			if !ok {
+				log.Printf("ticker channel closed: %v\n", ok)
+				return nil
+			}
+
+			log.Printf("Fetch started at: %v \n", tickerChan)
+
+			// start the fetch
+			err := sync.StartFetch(percentageChan, ctxWithCancel)
+			if err != nil {
+				return fmt.Errorf("error while fetching: %v", err)
+			}
 		}
-	}()
-
-	return percentageChan, nil
+	}
 }
 
 func (sync *Sync) updateFetchInterval(newInterval time.Duration) error {
@@ -552,7 +563,7 @@ func GetAllChannels() (channels []Channel, err error) {
 
 	req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
 	if err != nil {
-		return nil, fmt.Errorf("client: could not create request: %s\n", err)
+		return nil, fmt.Errorf("client: could not create request: %s", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -563,7 +574,7 @@ func GetAllChannels() (channels []Channel, err error) {
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("client: error making http request: %s\n", err)
+		return nil, fmt.Errorf("client: error making http request: %s", err)
 	}
 	defer response.Body.Close()
 
@@ -575,8 +586,7 @@ func GetAllChannels() (channels []Channel, err error) {
 	// specified in Channels struct by json tags
 	err = json.NewDecoder(response.Body).Decode(&channels)
 	if err != nil {
-		return nil, fmt.Errorf("client: could not decode json: %s\n", err)
-
+		return nil, fmt.Errorf("client: could not decode json: %s", err)
 	}
 
 	return channels, nil
@@ -588,7 +598,7 @@ func FetchPostsForPage(channelId string, params url.Values) (postRes PostRespons
 
 	req, err := http.NewRequest("GET", reqUrl, nil)
 	if err != nil {
-		return PostResponse{}, fmt.Errorf("client: could not create request: %s\n", err)
+		return PostResponse{}, fmt.Errorf("client: could not create request: %s", err)
 	}
 
 	req.URL.RawQuery = params.Encode()
@@ -602,7 +612,7 @@ func FetchPostsForPage(channelId string, params url.Values) (postRes PostRespons
 
 	response, err := client.Do(req)
 	if err != nil {
-		return PostResponse{}, fmt.Errorf("client: error making http request: %s\n", err)
+		return PostResponse{}, fmt.Errorf("client: error making http request: %s", err)
 	}
 	defer response.Body.Close()
 
@@ -612,7 +622,7 @@ func FetchPostsForPage(channelId string, params url.Values) (postRes PostRespons
 
 	err = json.NewDecoder(response.Body).Decode(&postRes)
 	if err != nil {
-		return PostResponse{}, fmt.Errorf("client: could not decode json: %s\n", err)
+		return PostResponse{}, fmt.Errorf("client: could not decode json: %s", err)
 	}
 
 	return postRes, nil
@@ -629,7 +639,10 @@ func deleteAndFilterPost(posts []Post) (filteredPosts []Post, err error) {
 		// delete posts from chroma if it's been deleted from mattermost
 		// delete any posts that have been deleted
 		if post.DeleteAt > 0 {
-			deleteFromChroma(post.Id)
+			err := deleteFromChroma(post.Id)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		// filter out posts that are not of type text and empty messages
@@ -650,14 +663,14 @@ func deleteFromChroma(postId string) error {
 
 	_, delError := GetSyncInstance().mattermostCollection.Delete(context.Background(), ids, nil, nil)
 	if delError != nil {
-		return delError
+		return fmt.Errorf("error while deleting from chroma: %v", delError)
 	}
 
 	return nil
 }
 
 func upsertPostsToChroma(filteredPosts []Post, access string) (err error) {
-	log.Println("Upserting posts to chroma...", len(filteredPosts), access)
+	// log.Println("Upserting...", len(filteredPosts), access)
 
 	metadatas := []map[string]interface{}{}
 	documents := []string{}
@@ -680,29 +693,26 @@ func upsertPostsToChroma(filteredPosts []Post, access string) (err error) {
 	for _, post := range filteredPosts {
 		ids = append(ids, post.Id)
 		documents = append(documents, post.Message)
-
-		metadata := map[string]interface{}{
+		metadatas = append(metadatas, map[string]interface{}{
 			"source":     "mm",
 			"access":     access,
 			"channel_id": post.ChannelId,
 			"user_id":    post.UserId,
-		}
-		metadatas = append(metadatas, metadata)
+		})
 	}
 
-	// Even tho the embeddings are not provided, this function call will embed the
-	// documents using the embedding function defined in the collection
-	upsertedCollection, upError := GetSyncInstance().mattermostCollection.Upsert(context.Background(), nil, metadatas, documents, ids)
+	// log.Println("Data: ", documents, ids, metadatas)
+
+	cxtWithTimeout, cancelCtxWithTimeout := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelCtxWithTimeout()
+
+	log.Println("Upserting to chroma...")
+
+	// Even tho the embeddings are not provided, this function call will embed the documents using the embedding function defined in the collection
+	_, upError := GetSyncInstance().mattermostCollection.Upsert(cxtWithTimeout, nil, metadatas, documents, ids)
 	if upError != nil {
-		log.Fatalf("Failed to upsert to chroma: %v \n", upError)
+		return fmt.Errorf("failed to upsert to chroma: %v", upError)
 	}
-
-	documentsCount, countError := upsertedCollection.Count(context.Background())
-	if countError != nil {
-		log.Printf("error counting document in collection: %v", countError)
-	}
-
-	log.Printf("Documents count: %v \n", documentsCount)
 
 	return nil
 }

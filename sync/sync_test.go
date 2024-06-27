@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"testing"
 
-	"github.com/EyobAshenaki/chroma-go/sync"
+	sse "github.com/EyobAshenaki/chroma-go/server_side_event"
 )
 
 func TestSyncStart(t *testing.T) {
@@ -90,38 +89,12 @@ func TestSyncStart(t *testing.T) {
 
 	// ----------------------------------------------
 
-	broker := sync.NewSSEServer()
+	broker := sse.NewSSEServer()
 
-	// Make b the HTTP handler for "/sync/start". This is
-	// possible since it has a ServeHTTP method. That method
-	// is called in a separate goroutine for each
-	// request to "/sync/start".
+	// Make broker the HTTP handler for "/sync/start". This is possible since it has a ServeHTTP method. That method is called in a separate goroutine for each request to "/sync/start".
 	http.Handle("/sync/start", broker)
 
-	go func() {
-		mmSync := sync.GetSyncInstance()
-
-		mmSync.InitializeStore()
-		defer mmSync.CloseStore()
-
-		percentageChan, err := mmSync.StartSync()
-		if err != nil {
-			fmt.Println(fmt.Errorf("Start sync error: %s", err))
-		}
-
-		defer mmSync.StopSync()
-
-		for percent := range percentageChan {
-			fmt.Printf("Syncing posts... %.2f%% complete\n", percent)
-			fmt.Println()
-			fmt.Println("-------------------------------------")
-			fmt.Println()
-
-			msgInByte := []byte(strconv.FormatFloat(percent, 'f', -1, 64))
-
-			broker.SendMessage(msgInByte)
-		}
-	}()
+	http.Handle("/sync/stop", broker)
 
 	err := http.ListenAndServe(":3333", nil)
 	if errors.Is(err, http.ErrServerClosed) {
