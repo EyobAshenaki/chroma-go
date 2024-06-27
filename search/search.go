@@ -61,8 +61,8 @@ type MetadataSchema struct {
 }
 
 type SearchRespnse struct {
-	Metadata    MetadataSchema `json:"metadata"`
-	LLMResponse string         `json:"llm_response"`
+	Metadatas   []MetadataSchema `json:"context"` // TODO: rename this to metadatas
+	LLMResponse string           `json:"llm"`     // TODO: rename this to llm_response
 }
 
 func Search(query string) SearchRespnse {
@@ -90,6 +90,11 @@ func Search(query string) SearchRespnse {
 		}
 	}
 
+	formattedDocuments := []string{}
+	for _, documents := range response.Documents {
+		formattedDocuments = append(formattedDocuments, documents...)
+	}
+
 	formattedMetadatas := []map[string]interface{}{}
 	for _, metadatas := range response.Metadatas {
 		formattedMetadatas = append(formattedMetadatas, metadatas...)
@@ -105,7 +110,7 @@ func Search(query string) SearchRespnse {
 		formattedDistances = append(formattedDistances, distances...)
 	}
 
-	mmMetadataDetails := MetadataSchema{}
+	metadataDetails := []MetadataSchema{}
 	for idx, formattedMetadata := range formattedMetadatas {
 		// format the metadata using the metadata schema for mattermost data
 		if formattedMetadata["source"].(string) == "mm" {
@@ -124,28 +129,37 @@ func Search(query string) SearchRespnse {
 			linkURL := "http://localhost:8065/" + teamDetail.Name
 
 			// format the metadata
-			mmMetadataDetails = MetadataSchema{
+			metadataDetails = append(metadataDetails, MetadataSchema{
 				UserId:      userDetail.Id,
-				UserName:    userDetail.UserName,
+				UserName:    userDetail.FirstName + userDetail.LastName,
 				UserDmLink:  linkURL + "/messages/@" + userDetail.UserName,
 				ChannelName: channelDetail.Name,
 				ChannelLink: linkURL + "/channels/" + channelDetail.Name,
-				Message:     postDetail.Message,
+				Message:     formattedDocuments[idx],
 				MessageLink: linkURL + "/pl/" + postDetail.Id,
 				Time:        time.Unix(postDetail.UpdateAt/1000, 0).Format(time.RFC822),
-				Source:      formattedMetadata["access"].(string),
-				Access:      formattedMetadata["source"].(string),
+				Source:      formattedMetadata["source"].(string),
+				Access:      formattedMetadata["access"].(string),
 				Score:       fmt.Sprintf("%f", (1 - formattedDistances[idx])),
-			}
+			})
+		} else if formattedMetadata["source"].(string) == "sl" {
+			metadataDetails = append(metadataDetails, MetadataSchema{
+				UserName:    formattedMetadata["user_name"].(string),
+				ChannelName: formattedMetadata["channel_name"].(string),
+				Message:     formattedDocuments[idx],
+				Time:        time.Unix((int64)(formattedMetadata["msg_date"].(float64)), 0).Format(time.RFC822),
+				Source:      formattedMetadata["source"].(string),
+				Access:      formattedMetadata["access"].(string),
+				Score:       fmt.Sprintf("%f", (1 - formattedDistances[idx])),
+			})
 		}
-		// TODO: format the metadata using the metadata schema for slack data
 
 	}
 
 	// TODO: replace this with a dynamic value
 	withLLM := false // a boolean used to check if the user wants an llm response
 	llmResponse := ""
-	if llmContext == "" && mmMetadataDetails == (MetadataSchema{}) {
+	if llmContext == "" && len(metadataDetails) <= 0 {
 		llmResponse = "Unable to find conversations related to your query."
 	} else if withLLM {
 		// TODO: implement this function
@@ -153,7 +167,7 @@ func Search(query string) SearchRespnse {
 	}
 
 	return SearchRespnse{
-		Metadata:    mmMetadataDetails,
+		Metadatas:   metadataDetails,
 		LLMResponse: llmResponse,
 	}
 }
@@ -175,7 +189,7 @@ func getDetails(reqUrl string, returnDetail interface{}) {
 	req.Header.Set("Authorization", token)
 
 	client := http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 	response, err := client.Do(req)
 	if err != nil {
