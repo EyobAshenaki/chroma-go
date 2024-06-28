@@ -26,6 +26,8 @@ func TestChromaGo(t *testing.T) {
 
 	// log.Printf("Documents count: %v \n", documentCount)
 
+	// ----------------------------------------------------
+
 	mmChannelIds := []interface{}{
 		// "9unddga5zin75goadjbwipz9tr",
 		// "jdwhwtegcpb3tei871ohw9sz9y",

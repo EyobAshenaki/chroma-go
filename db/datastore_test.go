@@ -8,6 +8,8 @@ import (
 )
 
 func TestDB(t *testing.T) {
+	t.Log("Test start")
+
 	store := db.GetDataStore("mattermost")
 
 	putErr := store.Put("plugin", "sync_interval", []byte("60"))
@@ -22,4 +24,5 @@ func TestDB(t *testing.T) {
 
 	fmt.Println("Value: ", string(val))
 
+	t.Log("Test end")
 }

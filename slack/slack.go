@@ -321,43 +321,28 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 					data: {"channel_id": 0.4}
 			*/
 
-			// event := map[string]interface{}{
-			// 	"id":    fmt.Sprintf("%v - %v", channelId, idx),
-			// 	"event": "onProgress",
-			// 	"data":  map[string]interface{}{"channel_id": (idx + 1) / len(messageFiles)},
-			// }
-			// eventJson, _ := json.Marshal(event)
-
-			// io.Writer.Write(w, eventJson)
-
-			io.Writer.Write(w, []byte(fmt.Sprintf("id: %v-%v\n", channelId, idx)))
-			io.Writer.Write(w, []byte("event: onProgress\n"))
-
-			data := map[string]interface{}{
-				"channel_id": (idx + 1) / len(messageFiles),
+			event := map[string]interface{}{
+				"id":    fmt.Sprintf("%v - %v", channelId, idx),
+				"event": "onProgress",
+				"data":  map[string]interface{}{"channel_id": (idx + 1) / len(messageFiles)},
 			}
-			dataJson, _ := json.Marshal(data)
+			eventJson, _ := json.Marshal(event)
 
-			io.Writer.Write(w, []byte(fmt.Sprintf("data: %v\n", dataJson)))
-			io.Writer.Write(w, []byte("\n"))
+			io.Writer.Write(w, eventJson)
 
 			flusher.Flush()
 		}
 	}
 
-	// event := map[string]interface{}{
-	// 	"id":    "100",
-	// 	"event": "done",
-	// 	"data":  map[string]interface{}{},
-	// }
-	// eventJson, _ := json.Marshal(event)
+	event := map[string]interface{}{
+		"id":    "100",
+		"event": "done",
+		"data":  map[string]interface{}{},
+	}
+	eventJson, _ := json.Marshal(event)
 
-	// io.Writer.Write(w, eventJson)
+	io.Writer.Write(w, eventJson)
 
-	io.Writer.Write(w, []byte("id: 100\n"))
-	io.Writer.Write(w, []byte("event: done\n"))
-	io.Writer.Write(w, []byte("data: {}\n"))
-	io.Writer.Write(w, []byte("\n"))
 	flusher.Flush()
 }
 
