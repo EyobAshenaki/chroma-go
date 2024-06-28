@@ -163,7 +163,7 @@ func (sync *Sync) CloseStore() {
 	sync.store.Close()
 }
 
-func (sync *Sync) StartFetch(percentageChan chan float64, ctx context.Context) error {
+func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) error {
 	fmt.Println()
 	fmt.Println("*********** Start fetching... ***********")
 	fmt.Println()
@@ -292,7 +292,7 @@ func (sync *Sync) StartFetch(percentageChan chan float64, ctx context.Context) e
 			page := postParams.Get("page")
 			nxtPage, err := strconv.Atoi(page)
 			if err != nil {
-				return fmt.Errorf("Error converting string to int: %v", err)
+				return fmt.Errorf("error converting string to int: %v", err)
 			}
 			nxtPage += 1
 
@@ -310,13 +310,26 @@ func (sync *Sync) StartFetch(percentageChan chan float64, ctx context.Context) e
 				return ctx.Err()
 			default:
 				log.Println("Send percentage from fetch")
-				percentageChan <- syncPercentage
+				var response [][]byte
+
+				response = append(response, []byte("event: onProgress\n"))
+				response = append(response, []byte(fmt.Sprintf("data: %.2f\n", syncPercentage)))
+				response = append(response, []byte("\n"))
+
+				percentageChan <- response
 			}
 
 		}
 	}
 	// manual completion indication
 	syncPercentage = 100
+	var response [][]byte
+
+	response = append(response, []byte("event: done\n"))
+	response = append(response, []byte(fmt.Sprintf("data: %.2f\n", syncPercentage)))
+	response = append(response, []byte("\n"))
+
+	percentageChan <- response
 
 	fmt.Println("Total posts:", totalPostsSinceLastSync)
 	fmt.Println("Total posts fetched:", totalFetchedPosts)
@@ -342,7 +355,7 @@ func (sync *Sync) stopFetch() error {
 	return nil
 }
 
-func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan float64) error {
+func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [][]byte) error {
 	fmt.Println()
 	fmt.Println("-------------------------------------")
 	fmt.Println("*********** Start syncing ***********")

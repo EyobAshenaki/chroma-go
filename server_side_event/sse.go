@@ -3,14 +3,14 @@ package sync
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"strconv"
 
 	"github.com/EyobAshenaki/chroma-go/sync"
 )
 
-type MessageChan chan []byte
+type MessageChan chan [][]byte
 
 type Broker struct {
 	clients        map[MessageChan]bool
@@ -74,7 +74,7 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Create a channel in which the current client receives
 	// messages when they occur.
-	messageChan := make(chan []byte)
+	messageChan := make(chan [][]byte)
 
 	// Add this client to the map of those that should
 	// receive updates
@@ -90,12 +90,6 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		log.Printf("stop sync: %v\n", req.URL.Path)
 		b.ctxCancel()
 		b.sync.StopTicker()
-
-		// Write data to the ResponseWriter
-		fmt.Fprintf(rw, "Stop sync...")
-
-		// Flush/send the data immediately instead of buffering it for later
-		flusher.Flush()
 	}
 
 	// Listen to connection close
@@ -107,7 +101,7 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		b.closingClients <- messageChan
 	}()
 
-	var percentageChan chan float64
+	var percentageChan chan [][]byte
 
 	if b.sync == nil {
 		log.Println("Initializing sync...")
@@ -122,7 +116,7 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if b.sync.IsTickerNil() {
 		log.Println("Sync is not running...")
 
-		percentageChan = make(chan float64)
+		percentageChan = make(chan [][]byte)
 
 		ctxWithCancel, cancelCtx := context.WithCancel(context.Background())
 
@@ -144,14 +138,18 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				}
 			}()
 
-			var previousPercentage []byte
-
 			for {
 				select {
 				case <-ctxWithCancel.Done():
-					log.Println("Reset sync!")
+					log.Println("Stop sync!")
 
-					b.message <- []byte(fmt.Sprintf("Sync Stopped at: %v", previousPercentage))
+					var response [][]byte
+
+					response = append(response, []byte("event: stop\n"))
+					response = append(response, []byte("data: {}\n"))
+					response = append(response, []byte("\n"))
+
+					b.message <- response
 
 					b.sync.SetTickerNil()
 					return
@@ -160,16 +158,13 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 						log.Printf("Percentage channel closed!")
 						return
 					}
-					fmt.Printf("Syncing posts... %.2f%% complete\n", percent)
+
+					fmt.Printf("Syncing posts... %v%% complete\n", string(percent[1]))
 					fmt.Println()
 					fmt.Println("-------------------------------------")
 					fmt.Println()
 
-					msgInByte := []byte(strconv.FormatFloat(percent, 'f', -1, 64))
-
-					previousPercentage = msgInByte
-
-					b.message <- msgInByte
+					b.message <- percent
 				}
 			}
 		}()
@@ -178,15 +173,17 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Block and wait for messages to be broadcasted
 	for {
 		// Get the message when broadcasted
-		msg, open := <-messageChan
+		msgs, open := <-messageChan
 
 		// If our channel is closed, the client must have disconnected so break
 		if !open {
 			break
 		}
 
-		// Write data to the ResponseWriter
-		fmt.Fprintf(rw, "Message from SSE: %v", msg)
+		for _, msg := range msgs {
+			// Write data to the ResponseWriter
+			io.Writer.Write(rw, msg)
+		}
 
 		// Flush/send the data immediately instead of buffering it for later
 		flusher.Flush()
@@ -194,10 +191,6 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Done.
 	log.Println("Finished HTTP request at ", req.URL.Path)
-}
-
-func (b *Broker) SendMessage(msg []byte) {
-	b.message <- msg
 }
 
 // Broker factory
