@@ -108,7 +108,6 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		// Initialize sync
 		b.sync = sync.GetSyncInstance()
-		b.sync.InitializeStore()
 
 		log.Println(b.sync.IsTickerNil())
 	}
@@ -145,7 +144,7 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 					var response [][]byte
 
-					response = append(response, []byte("event: stop\n"))
+					response = append(response, []byte("event: onStop\n"))
 					response = append(response, []byte("data: {}\n"))
 					response = append(response, []byte("\n"))
 

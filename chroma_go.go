@@ -44,6 +44,10 @@ func GetChromaInstance() *ChromaClient {
 	return &instance
 }
 
+func (chromaClient *ChromaClient) ResetData(ctx context.Context) (bool, error) {
+	return chromaClient.client.Reset(ctx)
+}
+
 func (chromaClient *ChromaClient) GetOrCreateCollection(collectionType string) (*chroma.Collection, error) {
 	godotenv.Load()
 

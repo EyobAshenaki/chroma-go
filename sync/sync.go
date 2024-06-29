@@ -61,8 +61,10 @@ func GetSyncInstance() *Sync {
 			log.Fatalf("Error while creating / getting collection: %v \n", colError)
 		}
 
+		initializedStore := initializeStore()
+
 		instance = &Sync{
-			store:                &db.DataStore{},
+			store:                initializedStore,
 			ticker:               nil,
 			mattermostCollection: newCollection,
 		}
@@ -71,8 +73,13 @@ func GetSyncInstance() *Sync {
 	return instance
 }
 
+func ResetVectorStore() (bool, error) {
+	chromaClient := chroma_go.GetChromaInstance()
+	return chromaClient.ResetData(context.Background())
+}
+
 // initialize the store in sync. if store is has values do nothing
-func (sync *Sync) InitializeStore() {
+func initializeStore() *db.DataStore {
 	store := db.GetDataStore("mm-sync")
 
 	// set fetch_interval
@@ -127,9 +134,11 @@ func (sync *Sync) InitializeStore() {
 	// 	fmt.Println(err)
 	// }
 
-	if *sync.store == (db.DataStore{}) {
-		sync.store = store
-	}
+	// if *sync.store == (db.DataStore{}) {
+	// 	sync.store = store
+	// }
+
+	return store
 }
 
 func (sync *Sync) StopSync() error {
@@ -169,7 +178,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 	fmt.Println()
 
 	// if fetching is in progress return nothing
-	if isFetchInProgress, err := sync.getIsFetchInProgress(); isFetchInProgress {
+	if isFetchInProgress, err := sync.GetIsFetchInProgress(); isFetchInProgress {
 		if err != nil {
 			return err
 		}
@@ -325,7 +334,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 	syncPercentage = 100
 	var response [][]byte
 
-	response = append(response, []byte("event: done\n"))
+	response = append(response, []byte("event: onDone\n"))
 	response = append(response, []byte(fmt.Sprintf("data: %.2f\n", syncPercentage)))
 	response = append(response, []byte("\n"))
 
@@ -363,7 +372,7 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 	fmt.Println()
 
 	// if syncing is in progress return nothing
-	if isSyncInProgress, err := sync.getIsSyncInProgress(); isSyncInProgress {
+	if isSyncInProgress, err := sync.GetIsSyncInProgress(); isSyncInProgress {
 		if err != nil {
 			return err
 		}
@@ -372,7 +381,7 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 	}
 
 	// get fetch interval from db
-	fetchInterval, err := sync.getFetchInterval()
+	fetchInterval, err := sync.GetFetchInterval()
 	if err != nil {
 		return err
 	}
@@ -414,19 +423,17 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 	}
 }
 
-func (sync *Sync) updateFetchInterval(newInterval time.Duration) error {
-	if sync.ticker == nil {
-		return fmt.Errorf("sync is not running")
-	}
-
+func (sync *Sync) UpdateFetchInterval(newInterval time.Duration) error {
 	if newInterval <= 0 {
 		// sync.ticker.Stop()
-		return fmt.Errorf("fetch interval much me greater than 0")
+		return fmt.Errorf("fetch interval must me greater than 0")
 	}
 
 	// reset stops a ticker and resets its period to the specified
 	// duration. The next tick will arrive after the new period elapses.
-	sync.ticker.Reset(newInterval)
+	if sync.ticker != nil {
+		sync.ticker.Reset(newInterval)
+	}
 
 	return sync.setFetchInterval(newInterval)
 }
@@ -440,7 +447,7 @@ func (sync *Sync) setFetchInterval(interval time.Duration) error {
 	return sync.store.Put("sync", "fetch_interval", []byte(strconv.Itoa(int(interval.Hours()))))
 }
 
-func (sync *Sync) getFetchInterval() (int, error) {
+func (sync *Sync) GetFetchInterval() (int, error) {
 	if *sync.store == (db.DataStore{}) {
 		return 0, fmt.Errorf("store is not initialized")
 	}
@@ -463,7 +470,7 @@ func (sync *Sync) setIsSyncInProgress(truthVal bool) error {
 	return sync.store.Put("sync", "is_sync_in_progress", []byte(strconv.FormatBool(truthVal)))
 }
 
-func (sync *Sync) getIsSyncInProgress() (bool, error) {
+func (sync *Sync) GetIsSyncInProgress() (bool, error) {
 	if *sync.store == (db.DataStore{}) {
 		return false, fmt.Errorf("store is not initialized")
 	}
@@ -486,7 +493,7 @@ func (sync *Sync) setIsFetchInProgress(truthVal bool) error {
 	return sync.store.Put("sync", "is_fetch_in_progress", []byte(strconv.FormatBool(truthVal)))
 }
 
-func (sync *Sync) getIsFetchInProgress() (bool, error) {
+func (sync *Sync) GetIsFetchInProgress() (bool, error) {
 	if *sync.store == (db.DataStore{}) {
 		return false, fmt.Errorf("store is not initialized")
 	}

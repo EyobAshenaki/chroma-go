@@ -336,7 +336,7 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 	}
 
 	io.Writer.Write(w, []byte("id: 100\n"))
-	io.Writer.Write(w, []byte("event: done\n"))
+	io.Writer.Write(w, []byte("event: onDone\n"))
 	io.Writer.Write(w, []byte("data: {}\n"))
 	io.Writer.Write(w, []byte("\n"))
 
