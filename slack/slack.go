@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -29,10 +30,10 @@ type Channel struct {
 }
 
 type ChannelSpec struct {
-	StoreAll  bool          `json:"store_all"`
-	StoreNone bool          `json:"store_none"`
-	StartDate time.Duration `json:"start_date"`
-	EndDate   time.Duration `json:"end_date"`
+	StoreAll  bool   `json:"store_all"`
+	StoreNone bool   `json:"store_none"`
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
 }
 
 type UserProfile struct {
@@ -85,7 +86,7 @@ func (slack *Slack) HandleZipUpload(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Upload started ...")
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// The argument to FormFile must match the name attribute of the file input on the frontend
 	file, fileHeader, err := r.FormFile("file")
@@ -140,8 +141,31 @@ func (slack *Slack) HandleZipUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
+	if r.Method != "POST" && r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if r.Method == "POST" {
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("error could not read request body: %v \n", err)
+			http.Error(w, "Internal Server Error: could not read request body", http.StatusInternalServerError)
+			return
+		}
+
+		unmarshalError := json.Unmarshal(requestBody, &slack.FilteredChannels)
+		if unmarshalError != nil {
+			log.Printf("error while trying to decode JSON: %v \n", unmarshalError)
+			http.Error(w, "Internal Server Error: could not decode JSON", http.StatusInternalServerError)
+			return
+		}
+
+		formattedJSON, _ := json.MarshalIndent(slack.FilteredChannels, "->", "  ")
+		fmt.Println(string(formattedJSON))
+
+		w.WriteHeader(http.StatusOK)
+		io.Writer.Write(w, []byte("Request processed successfully"))
 		return
 	}
 
@@ -151,23 +175,6 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 		return
 	}
-
-	requestBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("error could not read request body: %v \n", err)
-		http.Error(w, "Internal Server Error: could not read request body", http.StatusInternalServerError)
-		return
-	}
-
-	unmarshalError := json.Unmarshal(requestBody, &slack.FilteredChannels)
-	if unmarshalError != nil {
-		log.Printf("error while trying to decode JSON: %v \n", unmarshalError)
-		http.Error(w, "Internal Server Error: could not decode JSON", http.StatusInternalServerError)
-		return
-	}
-
-	formattedJSON, _ := json.MarshalIndent(slack.FilteredChannels, "->", "  ")
-	fmt.Println(string(formattedJSON))
 
 	if len(slack.Channels) <= 0 {
 		// read extracted data from zip and store it slack.Channels
@@ -186,11 +193,17 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 		channelName := ""
 		msgStartDate, msgEndDate := time.Time{}, time.Time{}
 
+		found := false
 		// get channel name for current channel
 		for _, channel := range slack.Channels {
 			if channel.Id == channelId {
 				channelName = channel.Name
+				found = true
 			}
+		}
+
+		if !found {
+			return
 		}
 
 		log.Println("***********************************")
@@ -204,11 +217,26 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 			msgStartDate = time.Unix(0, 0).UTC()
 			msgEndDate = time.Now()
 		} else {
-			msgStartDate = time.Unix(int64(channelSpec.StartDate), 0).UTC()
-			msgEndDate = time.Unix(int64(channelSpec.EndDate), 0).UTC()
+			channelStartDate, channelSDError := strconv.Atoi(channelSpec.StartDate)
+			if channelSDError != nil {
+				log.Printf("error while trying to parse start date: %v \n", channelSDError)
+				http.Error(w, "error while trying to parse start date", http.StatusBadRequest)
+				return
+			}
+
+			msgStartDate = time.Unix(int64(channelStartDate), 0).UTC()
+
+			channelEndDate, channelEDError := strconv.Atoi(channelSpec.EndDate)
+			if channelEDError != nil {
+				log.Printf("error while trying to parse end date: %v \n", channelEDError)
+				http.Error(w, "error while trying to parse end date", http.StatusBadRequest)
+				return
+			}
+
+			msgEndDate = time.Unix(int64(channelEndDate), 0).UTC()
 
 			if msgStartDate.After(msgEndDate) {
-				log.Printf("error - start date cannot be greater than end date: %v \n", err)
+				log.Printf("error - start date cannot be greater than end date\n")
 
 				http.Error(w, "error - start date cannot be greater than end date", http.StatusBadRequest)
 				return
@@ -239,7 +267,7 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// w.Header().Set("Access-Control-Allow-Origin", "*")
 		flusher.Flush()
 
 		// get all files in the channel's folder (each file correspond to daily messages)
@@ -321,14 +349,12 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 					data: {"channel_id": 0.4}
 			*/
 
-			io.Writer.Write(w, []byte(fmt.Sprintf("id: %v-%v\n", channelId, idx)))
+			io.Writer.Write(w, []byte(fmt.Sprintf("id: %v\n", idx)))
 			io.Writer.Write(w, []byte("event: onProgress\n"))
 
-			dataJson, _ := json.Marshal(map[string]interface{}{
-				"channel_id": (idx + 1) / len(messageFiles),
-			})
+			channelProgress := (idx + 1) / len(messageFiles)
 
-			io.Writer.Write(w, []byte(fmt.Sprintf("data: %v\n", dataJson)))
+			io.Writer.Write(w, []byte("data: {\""+channelId+"\": "+strconv.Itoa(channelProgress)+"}\n"))
 			io.Writer.Write(w, []byte("\n"))
 
 			flusher.Flush()
