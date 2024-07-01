@@ -63,21 +63,63 @@ func TestSyncStart(t *testing.T) {
 		io.Writer.Write(w, []byte(strconv.FormatBool(isFetchInProgress)))
 	})
 
-	mux.HandleFunc("/sync/is_sync_in_progress", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/sync/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		mmSync := sync.GetSyncInstance()
-
-		isSyncInProgress, err := mmSync.GetIsSyncInProgress()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Make sure that the writer supports flushing.
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 			return
 		}
 
-		io.Writer.Write(w, []byte(strconv.FormatBool(isSyncInProgress)))
+		// Set the headers related to event streaming.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		flusher.Flush()
+
+		previousIsSyncInProgress := true
+		previousIsFetchInProgress := false
+
+		mmSync := sync.GetSyncInstance()
+
+		for idx := 0; ; idx++ {
+			isSyncInProgress, err := mmSync.GetIsSyncInProgress()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			isFetchInProgress, err := mmSync.GetIsFetchInProgress()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			if isSyncInProgress != previousIsSyncInProgress || isFetchInProgress != previousIsFetchInProgress {
+				previousIsSyncInProgress = isSyncInProgress
+				previousIsFetchInProgress = isFetchInProgress
+
+				io.Writer.Write(w, []byte(fmt.Sprintf("id: %v\n", idx)))
+				io.Writer.Write(w, []byte("event: onStatusChange\n"))
+				io.Writer.Write(w, []byte("data: {\"is_sync_in_progress\": "+strconv.FormatBool(isSyncInProgress)+", \"is_fetch_in_progress\": "+strconv.FormatBool(isFetchInProgress)+"}\n"))
+				io.Writer.Write(w, []byte("\n"))
+				flusher.Flush()
+			}
+
+			io.Writer.Write(w, []byte(fmt.Sprintf("id: %v\n", idx)))
+			io.Writer.Write(w, []byte("event: onNoStatusChange\n"))
+			io.Writer.Write(w, []byte("data: {}\n"))
+			io.Writer.Write(w, []byte("\n"))
+			flusher.Flush()
+
+			time.Sleep(1 * time.Second)
+		}
 	})
 
 	mux.HandleFunc("/sync/fetch_interval", func(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +168,25 @@ func TestSyncStart(t *testing.T) {
 			}
 
 			io.Writer.Write(w, []byte("Fetch interval updated successfully"))
+		}
+	})
+
+	mux.HandleFunc("/sync/last_fetched_at", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		mmSync := sync.GetSyncInstance()
+
+		if r.Method == "GET" {
+			lastFetchedAt, err := mmSync.GetLastFetchedAt()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			io.Writer.Write(w, []byte(strconv.Itoa(int(lastFetchedAt.UnixMilli()))))
 		}
 	})
 

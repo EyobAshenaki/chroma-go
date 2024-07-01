@@ -187,7 +187,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 	}
 
 	// get last synced time from db
-	lastFetchedAt, err := sync.getLastFetchedAt()
+	lastFetchedAt, err := sync.GetLastFetchedAt()
 	if err != nil {
 		return err
 	}
@@ -547,7 +547,7 @@ func (sync *Sync) setLastFetchedAt(startSyncTime time.Time) error {
 	return sync.store.Put("sync", "last_fetched_at", []byte(strconv.FormatInt(startSyncTime.UnixMilli(), 10)))
 }
 
-func (sync *Sync) getLastFetchedAt() (time.Time, error) {
+func (sync *Sync) GetLastFetchedAt() (time.Time, error) {
 	if *sync.store == (db.DataStore{}) {
 		return time.Time{}, fmt.Errorf("store is not initialized")
 	}
