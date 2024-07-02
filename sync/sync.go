@@ -232,6 +232,8 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 	}
 
 	totalPosts := calcTotalPosts(channels)
+	log.Println("Total MM posts: ", totalPosts)
+	log.Println("Embedded posts so far: ", totalFetchedPosts)
 
 	// Get the total number of posts since last sync
 	totalPostsSinceLastSync := totalPosts - totalFetchedPosts
@@ -250,6 +252,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			// Fetch posts for the current page
 			postsRes, err := FetchPostsForPage(channel.Id, postParams)
 			if err != nil {
+				sync.setTotalFetchedPosts(0)
 				return err
 			}
 
@@ -261,9 +264,6 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			for _, postId := range postsRes.Order {
 				posts = append(posts, postsRes.Posts[postId])
 			}
-
-			// Increment the number of fetched posts
-			loadedPosts = len(posts)
 
 			// get the channel's access restriction (private/ public)
 			access := ""
@@ -279,12 +279,17 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			// remove deleted posts from chroma and filter out any irrelevant posts
 			filteredPosts, err := deleteAndFilterPost(posts)
 			if err != nil {
+				sync.setTotalFetchedPosts(0)
 				return err
 			}
 
 			// upsert the filtered channel posts to chroma
 			if len(filteredPosts) > 0 {
+				// Increment the number of fetched posts
+				loadedPosts = len(filteredPosts)
+
 				if err := upsertPostsToChroma(filteredPosts, access); err != nil {
+					sync.setTotalFetchedPosts(0)
 					return err
 				}
 			}
@@ -301,6 +306,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			page := postParams.Get("page")
 			nxtPage, err := strconv.Atoi(page)
 			if err != nil {
+				sync.setTotalFetchedPosts(0)
 				return fmt.Errorf("error converting string to int: %v", err)
 			}
 			nxtPage += 1
@@ -315,10 +321,11 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			select {
 			case <-ctx.Done():
 				log.Println("fetch interrupted")
+				sync.setTotalFetchedPosts(0)
 				close(percentageChan)
 				return ctx.Err()
 			default:
-				log.Println("Send percentage from fetch")
+				log.Println("Send percentage from fetch: ", syncPercentage)
 				var response [][]byte
 
 				response = append(response, []byte("event: onProgress\n"))
@@ -657,12 +664,15 @@ func deleteAndFilterPost(posts []Post) (filteredPosts []Post, err error) {
 
 	for _, post := range posts {
 		// delete posts from chroma if it's been deleted from mattermost
-		// delete any posts that have been deleted
 		if post.DeleteAt > 0 {
 			err := deleteFromChroma(post.Id)
 			if err != nil {
 				return nil, err
 			}
+
+			// remove any posts that have been deleted
+			removePost(posts, post.Id)
+			continue
 		}
 
 		// filter out posts that are not of type text and empty messages
@@ -674,6 +684,14 @@ func deleteAndFilterPost(posts []Post) (filteredPosts []Post, err error) {
 	}
 
 	return filteredPosts, nil
+}
+
+func removePost(posts []Post, postId string) {
+	for idx, post := range posts {
+		if post.Id == postId {
+			posts = append(posts[:idx], posts[idx+1:]...)
+		}
+	}
 }
 
 func deleteFromChroma(postId string) error {
