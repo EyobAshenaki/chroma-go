@@ -63,6 +63,23 @@ func TestSyncStart(t *testing.T) {
 		io.Writer.Write(w, []byte(strconv.FormatBool(isFetchInProgress)))
 	})
 
+	mux.HandleFunc("/sync/is_sync_in_progress", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		mmSync := sync.GetSyncInstance()
+
+		isSyncInProgress, err := mmSync.GetIsSyncInProgress()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		io.Writer.Write(w, []byte(strconv.FormatBool(isSyncInProgress)))
+	})
+
 	mux.HandleFunc("/sync/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -117,8 +134,6 @@ func TestSyncStart(t *testing.T) {
 			io.Writer.Write(w, []byte("data: {}\n"))
 			io.Writer.Write(w, []byte("\n"))
 			flusher.Flush()
-
-			time.Sleep(1 * time.Second)
 		}
 	})
 
