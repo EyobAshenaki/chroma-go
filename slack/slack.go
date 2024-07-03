@@ -352,9 +352,10 @@ func (slack *Slack) HandleFilteredChannelData(w http.ResponseWriter, r *http.Req
 			io.Writer.Write(w, []byte(fmt.Sprintf("id: %v\n", idx)))
 			io.Writer.Write(w, []byte("event: onProgress\n"))
 
-			channelProgress := (idx + 1) / len(messageFiles)
+			channelProgress := float64(idx+1) / float64(len(messageFiles))
+			log.Println("progress: ", idx+1, len(messageFiles), channelProgress)
 
-			io.Writer.Write(w, []byte("data: {\""+channelId+"\": "+strconv.Itoa(channelProgress)+"}\n"))
+			io.Writer.Write(w, []byte("data: {\""+channelId+"\": "+fmt.Sprintf("%.2f", channelProgress)+"}\n"))
 			io.Writer.Write(w, []byte("\n"))
 
 			flusher.Flush()
