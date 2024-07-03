@@ -16,7 +16,7 @@ import (
 	chroma "github.com/amikos-tech/chroma-go"
 )
 
-const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
+const token = "Bearer cg78izqitif87m8aacqq4bw4oc"
 const mmAPI = "http://localhost:8065/api/v4"
 
 type Post struct {
@@ -206,7 +206,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 	}
 
 	// // Set fetching to false before returning
-	// defer sync.stopFetch()
+	defer sync.stopFetch()
 
 	//save the time where syncing started
 	startSyncTime := time.Now()
@@ -241,6 +241,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 	var posts []Post
 	loadedPosts := 0
 	var syncPercentage float64
+	previousTotalFetchedPosts := totalFetchedPosts
 
 	for _, channel := range channels {
 		// 200 is the max number of posts per page
@@ -252,12 +253,13 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			// Fetch posts for the current page
 			postsRes, err := FetchPostsForPage(channel.Id, postParams)
 			if err != nil {
-				sync.setTotalFetchedPosts(0)
+				sync.setTotalFetchedPosts(previousTotalFetchedPosts)
 				return err
 			}
 
-			if len(postsRes.Posts) <= 0 {
-				continue
+			if len(postsRes.Order) <= 0 {
+				// log.Println("No posts found for channel: ", channel.Id)
+				break
 			}
 
 			// add posts while keeping order
@@ -279,7 +281,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			// remove deleted posts from chroma and filter out any irrelevant posts
 			filteredPosts, err := deleteAndFilterPost(posts)
 			if err != nil {
-				sync.setTotalFetchedPosts(0)
+				sync.setTotalFetchedPosts(previousTotalFetchedPosts)
 				return err
 			}
 
@@ -289,10 +291,13 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 				loadedPosts = len(filteredPosts)
 
 				if err := upsertPostsToChroma(filteredPosts, access); err != nil {
-					sync.setTotalFetchedPosts(0)
+					sync.setTotalFetchedPosts(previousTotalFetchedPosts)
 					return err
 				}
 			}
+
+			// clean up posts slice
+			posts = nil
 
 			// Set the total fetched posts in db
 			sync.setTotalFetchedPosts(totalFetchedPosts + loadedPosts)
@@ -306,7 +311,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			page := postParams.Get("page")
 			nxtPage, err := strconv.Atoi(page)
 			if err != nil {
-				sync.setTotalFetchedPosts(0)
+				sync.setTotalFetchedPosts(previousTotalFetchedPosts)
 				return fmt.Errorf("error converting string to int: %v", err)
 			}
 			nxtPage += 1
@@ -321,7 +326,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			select {
 			case <-ctx.Done():
 				log.Println("fetch interrupted")
-				sync.setTotalFetchedPosts(0)
+				sync.setTotalFetchedPosts(previousTotalFetchedPosts)
 				close(percentageChan)
 				return ctx.Err()
 			default:
@@ -337,8 +342,9 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 
 		}
 	}
-	// manual completion indication
-	syncPercentage = 100
+	fmt.Println("Total posts:", totalPostsSinceLastSync)
+	fmt.Println("Total posts fetched:", totalFetchedPosts)
+
 	var response [][]byte
 
 	response = append(response, []byte("event: onDone\n"))
@@ -347,14 +353,8 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 
 	percentageChan <- response
 
-	fmt.Println("Total posts:", totalPostsSinceLastSync)
-	fmt.Println("Total posts fetched:", totalFetchedPosts)
-
 	// Set the last synced time in db
 	sync.setLastFetchedAt(startSyncTime)
-
-	// Print sync completion message
-	fmt.Printf("Fetching posts... %.2f%% complete\n", syncPercentage)
 
 	return nil
 }
@@ -407,7 +407,7 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 
 	// // stop ticker and ser isSyncInProgress to false before returning
 	// defer sync.StopSync()
-
+	alreadyRun := false
 	for {
 		select {
 		case <-ctxWithCancel.Done():
@@ -425,6 +425,17 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 			err := sync.StartFetch(percentageChan, ctxWithCancel)
 			if err != nil {
 				return fmt.Errorf("error while fetching: %v", err)
+			}
+		case currentTime := <-time.After(0): // This case runs immediately
+			if !alreadyRun {
+				log.Println("Immediate fetch started: ", currentTime)
+
+				err := sync.StartFetch(percentageChan, ctxWithCancel)
+				if err != nil {
+					return fmt.Errorf("error while fetching: %v", err)
+				}
+
+				alreadyRun = true
 			}
 		}
 	}
