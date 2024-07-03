@@ -11,7 +11,7 @@ import (
 )
 
 // TODO: implement an authentication method to replace the use of this token
-const token = "Bearer wz1rgk853b8tpbg18aiux3cdae"
+const token = "Bearer cg78izqitif87m8aacqq4bw4oc"
 
 // TODO: replace this with a dynamic value from the .env file
 const mmAPI = "http://localhost:8065/api/v4"
