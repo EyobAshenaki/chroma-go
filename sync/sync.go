@@ -148,6 +148,7 @@ func (sync *Sync) StopSync() error {
 	if err != nil {
 		return err
 	}
+	defer sync.SetTickerNil()
 
 	fmt.Println()
 	fmt.Println("-------------------------------------")

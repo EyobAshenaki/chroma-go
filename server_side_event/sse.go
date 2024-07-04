@@ -151,7 +151,6 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 					b.message <- response
 
-					b.sync.SetTickerNil()
 					return
 				case percent, ok := <-percentageChan:
 					if !ok {
