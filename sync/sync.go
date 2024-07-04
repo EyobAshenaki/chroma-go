@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime/pprof"
 	"strconv"
 	"sync"
 	"time"
@@ -258,7 +260,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 			}
 
 			if len(postsRes.Order) <= 0 {
-				// log.Println("No posts found for channel: ", channel.Id)
+				log.Println("No posts found for channel: ", channel.Id)
 				break
 			}
 
@@ -287,8 +289,8 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 
 			// upsert the filtered channel posts to chroma
 			if len(filteredPosts) > 0 {
-				// Increment the number of fetched posts
 				loadedPosts = len(filteredPosts)
+				log.Println("Loaded posts: ", loadedPosts)
 
 				if err := upsertPostsToChroma(filteredPosts, access); err != nil {
 					sync.setTotalFetchedPosts(previousTotalFetchedPosts)
@@ -296,10 +298,7 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 				}
 			}
 
-			// clean up posts slice
-			posts = nil
-
-			// Set the total fetched posts in db
+			// Increment the total number of fetched posts
 			sync.setTotalFetchedPosts(totalFetchedPosts + loadedPosts)
 
 			// if the previous post id is empty, we have reached the end of the posts for this channel
@@ -355,6 +354,15 @@ func (sync *Sync) StartFetch(percentageChan chan [][]byte, ctx context.Context) 
 
 	// Set the last synced time in db
 	sync.setLastFetchedAt(startSyncTime)
+
+	// profile the memory usage
+	pprof.StopCPUProfile()
+	f, fErr := os.Create("after-scan-2.pprof")
+	if fErr != nil {
+		fmt.Println("Error: ", fErr)
+	}
+	pprof.WriteHeapProfile(f)
+	f.Close()
 
 	return nil
 }
@@ -426,6 +434,14 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 			if err != nil {
 				return fmt.Errorf("error while fetching: %v", err)
 			}
+			// profile the memory usage
+			pprof.StopCPUProfile()
+			f, fErr := os.Create("after-scan-select.pprof")
+			if fErr != nil {
+				fmt.Println("Error: ", fErr)
+			}
+			pprof.WriteHeapProfile(f)
+			f.Close()
 		case currentTime := <-time.After(0): // This case runs immediately
 			if !alreadyRun {
 				log.Println("Immediate fetch started: ", currentTime)
@@ -436,6 +452,9 @@ func (sync *Sync) StartSync(ctxWithCancel context.Context, percentageChan chan [
 				}
 
 				alreadyRun = true
+			} else {
+				log.Println("waiting for the interval to elapse ...")
+				time.Sleep(10 * time.Second)
 			}
 		}
 	}

@@ -108,6 +108,7 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		// Initialize sync
 		b.sync = sync.GetSyncInstance()
+		// b.sync.CloseStore()
 
 		log.Println(b.sync.IsTickerNil())
 	}

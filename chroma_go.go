@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"runtime/pprof"
 	"sync"
 
 	chroma "github.com/amikos-tech/chroma-go"
@@ -40,6 +42,14 @@ func GetChromaInstance() *ChromaClient {
 	}
 
 	fmt.Println("... Connected to Chroma")
+	// profile start
+	pprof.StopCPUProfile()
+	f, fErr := os.Create("after-chroma-connect.pprof")
+	if fErr != nil {
+		fmt.Println("Error: ", fErr)
+	}
+	pprof.WriteHeapProfile(f)
+	f.Close()
 
 	return &instance
 }
