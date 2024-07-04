@@ -128,12 +128,6 @@ func TestSyncStart(t *testing.T) {
 				io.Writer.Write(w, []byte("\n"))
 				flusher.Flush()
 			}
-
-			io.Writer.Write(w, []byte(fmt.Sprintf("id: %v\n", idx)))
-			io.Writer.Write(w, []byte("event: onNoStatusChange\n"))
-			io.Writer.Write(w, []byte("data: {}\n"))
-			io.Writer.Write(w, []byte("\n"))
-			flusher.Flush()
 		}
 	})
 
