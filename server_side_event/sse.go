@@ -106,16 +106,11 @@ func (b *Broker) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	if b.sync == nil {
 		log.Println("Initializing sync...")
 
-		// Initialize sync
 		b.sync = sync.GetSyncInstance()
 		// b.sync.CloseStore()
-
-		log.Println(b.sync.IsTickerNil())
 	}
 
 	if b.sync.IsTickerNil() {
-		log.Println("Sync is not running...")
-
 		percentageChan = make(chan [][]byte)
 
 		ctxWithCancel, cancelCtx := context.WithCancel(context.Background())

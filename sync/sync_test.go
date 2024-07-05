@@ -168,7 +168,7 @@ func TestSyncStart(t *testing.T) {
 				return
 			}
 
-			fetchDuration := time.Duration(fetchIntervalInt) * time.Hour
+			fetchDuration := time.Duration(fetchIntervalInt) * time.Second
 
 			err := mmSync.UpdateFetchInterval(fetchDuration)
 			if err != nil {

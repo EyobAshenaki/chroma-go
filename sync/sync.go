@@ -470,6 +470,7 @@ func (sync *Sync) UpdateFetchInterval(newInterval time.Duration) error {
 	// reset stops a ticker and resets its period to the specified
 	// duration. The next tick will arrive after the new period elapses.
 	if sync.ticker != nil {
+		log.Println("Resetting ticker with new interval: ", newInterval)
 		sync.ticker.Reset(newInterval)
 	}
 
@@ -482,7 +483,7 @@ func (sync *Sync) setFetchInterval(interval time.Duration) error {
 		return fmt.Errorf("store is not initialized")
 	}
 
-	return sync.store.Put("sync", "fetch_interval", []byte(strconv.Itoa(int(interval.Hours()))))
+	return sync.store.Put("sync", "fetch_interval", []byte(strconv.Itoa(int(interval.Seconds()))))
 }
 
 func (sync *Sync) GetFetchInterval() (int, error) {
